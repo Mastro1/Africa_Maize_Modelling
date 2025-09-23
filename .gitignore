@@ -1,0 +1,36 @@
+.venv/
+
+__pycache__/
+
+.env
+
+# ignore shapefiles .shp .gpkg
+*.shp
+*.gpkg
+*.cpg
+*.prj
+*.shx
+*.dbf
+*.tif
+*.sbn
+*.sbx
+*.xml
+*.txt
+!requirements.txt
+*.bil
+*.mdb
+*.hdr
+*.stx
+
+*.html
+
+Paper/
+
+GEMINI.md
+
+# ignore csv files
+*.csv
+!Model/africa_results/all_africa_maize_yield_predictions.csv
+
+
+

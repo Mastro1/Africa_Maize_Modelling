@@ -1,0 +1,118 @@
+{
+    "Benin": {
+      "Main": "Maize 1"
+    },
+    "Burundi": {
+      "Season A": "Maize 1",
+      "Season B": "Maize 2",
+      "Season C": "Maize 2"
+    },
+    "Cameroon": {
+      "1st Season": "Maize 1",
+      "2nd Season": "Maize 2",
+      "North 1st Season": "Maize 1",
+      "North 2nd Season": "Maize 2"
+    },
+    "DRC": {
+      "Main": "Maize 1"
+    },
+    "Ethiopia": {
+      "Meher": "Maize 1"
+    },
+    "Ghana": {
+      "Main": "Maize 1"
+    },
+    "Kenya": {
+      "Annual": "Maize 1",
+      "Long": "Maize 1",
+      "Short": "Maize 2"
+    },
+    "Rwanda": {
+      "Season A": "Maize 1",
+      "Season B": "Maize 2"
+    },
+    "Somalia": {
+      "Gu": "Maize 1",
+      "Gu-off": "Maize 2",
+      "Deyr": "Maize 2",
+      "Deyr-off": "Maize 2"
+    },
+    "Tanzania, United Republic of": {
+      "Annual": "Maize 1",
+      "Long": "Maize 1",
+      "Long/Dry": "Maize 1",
+      "Short": "Maize 2"
+    },
+    "Togo": {
+      "Main": "Maize 1"
+    },
+    "Uganda": {
+      "First": "Maize 1",
+      "Second": "Maize 2"
+    },
+
+    "Angola": {
+        "Main": "Maize 1"
+    },
+    "Burkina Faso": {
+        "Annual": "Maize 1",
+        "Main": "Maize 1"
+    },
+    "Central African Republic": {
+        "Main": "Maize 1"
+    },
+    "Chad": {
+        "Main": "Maize 1"
+    },
+
+    "Guinea": {
+        "Main": "Maize 1"
+    },
+    "Lesotho": {
+        "Summer": "Maize 1"
+    },
+    "Madagascar": {
+        "Annual": "Maize 1"
+    },
+    "Malawi": {
+        "Annual": "Maize 1",
+        "Main": "Maize 1"
+    },
+    "Mali": {
+        "Main": "Maize 1"
+    },
+    "Mauritania": {
+        "Annual": "Maize 1",
+        "Main": "Maize 1",
+        "Bas-fond": "Maize 2",
+        "Dam retention": "Maize 2",
+        "Decrue controlee": "Maize 2",
+        "Walo": "Maize 2"
+    },
+    "Mozambique": {
+        "Main": "Maize 1"
+    },
+    "Niger": {
+        "Dry": "Maize 1",
+        "Main": "Maize 1"
+    },
+    "Nigeria": {
+        "Wet": "Maize 1"
+    },
+    "Senegal": {
+        "Main-off": "Maize 1",
+        "Main": "Maize 1"
+    },
+    "Sierra Leone": {
+        "Main": "Maize 1"
+    },
+    "South Africa": {
+        "Summer": "Maize 1"
+    },
+    "Zambia": {
+        "Annual": "Maize 1"
+    },
+    "Zimbabwe": {
+        "Main": "Maize 1"
+    }
+  }
