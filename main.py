@@ -8,6 +8,9 @@ import pandas as pd
 # FAOSTAT
 from FAOSTAT.download_faostat import main as download_faostat
 
+# GLAD
+from GLAD.download_GLAD_map_3km import main as download_glad_map_3km
+
 # GAEZ
 from GAEZ.download_GAEZ_yield_potential import main as download_gaez
 from GAEZ.extract_gaez_values import GAEZYieldExtractor
@@ -36,6 +39,7 @@ if __name__ == "__main__":
 
     # General Data
     download_faostat()
+    download_glad_map_3km()
     download_gaez()
     download_geoglam()
     download_soil_data()

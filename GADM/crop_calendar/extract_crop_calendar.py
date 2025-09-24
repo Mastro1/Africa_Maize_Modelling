@@ -118,5 +118,12 @@ def extract_crop_calendar():
     results_df.to_csv(output_path, index=False)
     print("Processing complete.")
 
+    print(f"\n📊 SUMMARY:")
+    print(f"   • Total regions kept: {len(results_df)}")
+    print(f"   • Regions with Maize 1 data: {results_df['Maize_1_calendar_country'].notna().sum()}")
+    print(f"   • Regions with Maize 2 data: {results_df['Maize_2_calendar_country'].notna().sum()}")
+    print(f"   • Regions with both Maize types: {(results_df['Maize_1_calendar_country'].notna() & results_df['Maize_2_calendar_country'].notna()).sum()}")
+
+
 if __name__ == '__main__':
     extract_crop_calendar() 

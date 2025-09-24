@@ -865,7 +865,7 @@ def process_all_africa_glam(force_redo=False):
 
 if __name__ == "__main__":
     # Process all Africa with GLAM calendar
-    process_all_africa_glam(force_redo=True)
+    process_all_africa_glam(force_redo=False)
     
     # Or process single country
-    #run_glam_data_preparation(country_name="Zambia")
+    #run_glam_data_preparation(country_name="Tanzania")

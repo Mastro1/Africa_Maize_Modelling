@@ -1185,5 +1185,5 @@ def run_glam_for_all_countries(crop_name="Maize", force_redo=False, plot=True):
 
 if __name__ == "__main__":
     # Run the analysis for all countries
-    run_glam_for_all_countries(force_redo=True, plot=False) 
+    run_glam_for_all_countries(force_redo=False, plot=False) 
     #run_glam_data_preparation(country_name="Kenya", crop_name="Maize", plot=False)
