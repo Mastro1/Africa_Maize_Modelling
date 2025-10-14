@@ -21,7 +21,7 @@ def load_data():
     # Load FAO data (this is already at national level)
     print("Loading FAO data...")
     fao_df = pd.read_csv(
-        os.path.join(PROJECT_ROOT, "RemoteSensing", "GADM", "preprocessed_concat", "admin0_merged_data_GLAM_concat.csv"),
+        os.path.join(PROJECT_ROOT, "RemoteSensing", "HarvestStatAfrica", "preprocessed_concat", "all_admin0_merged_data.csv"),
         usecols=['country', 'year', 'yield']
     )
     fao_df.rename(columns={'yield': 'fao_yield'}, inplace=True)
@@ -43,11 +43,20 @@ def compute_weighted_series(df, value_col, weight_col='crop_area_ha'):
     def wavg(group):
         d = group[value_col]
         w = group[weight_col]
-        mask = pd.notnull(d) & pd.notnull(w)
-        if mask.sum() == 0:
-            return np.nan
-        return np.average(d[mask], weights=w[mask])
-    
+
+        # First try weighted average with valid weights
+        weight_mask = pd.notnull(d) & pd.notnull(w)
+        if weight_mask.sum() > 0:
+            return np.average(d[weight_mask], weights=w[weight_mask])
+
+        # Fall back to simple average if weights are not available
+        value_mask = pd.notnull(d)
+        if value_mask.sum() > 0:
+            return np.mean(d[value_mask])
+
+        # Return NaN if no valid data
+        return np.nan
+
     weighted_series = df.groupby(['country', 'year'], group_keys=False).apply(wavg).reset_index()
     weighted_series.columns = ['country', 'year', value_col]
     return weighted_series

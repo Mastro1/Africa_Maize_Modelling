@@ -28,38 +28,20 @@ epsilon = 1e-9
 # Define allowed feature prefixes
 allowed_prefixes = [
     'gdd_', 'precip_',
-    'ndvi_', 'evi_',
-    'temp_2m_', 'soil_moisture_',
-    'max_dry_days_', 'heat_stress_days_',
-    'veg_', 'flow_'
-]
-
-# Fixed list of environmental features for consistent training/prediction
-FIXED_ENV_FEATURES = [
-    # Growing degree days
-    'gdd_plant_harv', 'gdd_plant_veg', 'gdd_veg_harv', 'gdd_plant_end',
-    # Precipitation
-    'precip_plant_harv', 'precip_plant_veg', 'precip_veg_harv', 'precip_plant_end',
-    # Drought stress
-    'max_dry_days_plant_harv', 'max_dry_days_plant_veg', 'max_dry_days_veg_harv', 'max_dry_days_plant_end',
-    # Heat stress
-    'heat_stress_days_plant_harv', 'heat_stress_days_plant_veg', 'heat_stress_days_veg_harv', 'heat_stress_days_plant_end',
-    # NDVI vegetation indices
-    'ndvi_integral_plant_harv', 'max_ndvi_plant_harv', 'min_ndvi_plant_harv', 'range_ndvi_plant_harv',
-    'ndvi_integral_plant_veg', 'max_ndvi_plant_veg', 'min_ndvi_plant_veg', 'range_ndvi_plant_veg',
-    # Temperature
-    'temp_2m_mean_plant_harv', 'temp_2m_max_plant_harv', 'temp_2m_min_plant_harv'
+    'ndvi_', 'evi_', 
+    'temp_2m_', 'soil_moisture_', 
+    'max_dry_days_', 'heat_stress_days_', 
+    'drought_',
 ]
 
 # Best configuration from structure search
 BEST_CONFIG = {
-    "objective": "normalized_residuals",
-    "space_config": "both_relative_and_raw",
-    "crop_area_use": "exclude_crop_area",
-    "interaction_type": "soil_weather_interactions",
-    "gaez_method": "fao_relatively_adjusted"
+    "objective": "normalized_residuals", # possible: normalized_residuals, residuals
+    "space_config": "relative_only", # possible: None, relative_only, raw_stats_only, both_relative_and_raw
+    "crop_area_use": "exclude_crop_area", # possible: exclude_crop_area, include_crop_area
+    "interaction_type": "no_interactions", # possible: no_interactions, soil_weather_interactions, soil_comprehensive_interactions
+    "gaez_method": "raw_gaez" # possible: no_gaez, raw_gaez, relative_ranking, fao_adjusted, fao_relatively_adjusted
 }
-
 
 
 def add_country_zscores(
@@ -101,10 +83,10 @@ def create_spatial_features(rs_df, space_config):
     rs_df = rs_df.copy()
     spatial_features = []
     
-    # Use fixed environmental features list for consistency between training and prediction
-    env_features = [col for col in FIXED_ENV_FEATURES if col in rs_df.columns]
+    # Use dynamic environmental features filtering based on allowed_prefixes
+    env_features = [col for col in rs_df.columns if any(prefix in col for prefix in allowed_prefixes)]
     print(f"   - Creating spatial features for {len(env_features)} environmental features...")
-    print(f"   - Available features: {len([col for col in FIXED_ENV_FEATURES if col in rs_df.columns])}/{len(FIXED_ENV_FEATURES)} from fixed list")
+    print(f"   - Available features: {len(env_features)} from allowed_prefixes filtering")
     
     if space_config in ['relative_only', 'both_relative_and_raw']:
         # Location z-scores within country - vectorized operation
@@ -412,24 +394,32 @@ def add_temporal_loc10_zscores(df: pd.DataFrame, base_features: list, window: in
     df = df.copy()
     new_feature_names = []
     print(f"     - Computing temporal z-scores for {len(base_features)} features...")
-    
+
+    # Sort once at the beginning
+    df = df.sort_values(['PCODE', 'year'])
+
     for i, feature in enumerate(base_features):
         if feature not in df.columns:
             continue
         if i % 5 == 0:  # Progress indicator
             print(f"       Processing feature {i+1}/{len(base_features)}: {feature}")
-        
+
         new_col = f"{feature}_loc10_zscore"
         new_feature_names.append(new_col)
-        df[new_col] = np.nan
-        
-        # Group processing with progress for large datasets
-        for pcode, g in df.groupby('PCODE'):
-            g_sorted = g.sort_values('year')
-            vals = g_sorted[feature].values
-            z = _compute_loc10_z_for_series(vals, window=window)
-            df.loc[g_sorted.index, new_col] = z
-    
+
+        # Vectorized approach: use groupby + rolling window
+        df[new_col] = (
+            df.groupby('PCODE')[feature]
+            .transform(lambda x: (x - x.rolling(window=window, center=True, min_periods=1).mean())
+                      / (x.rolling(window=window, center=True, min_periods=1).std(ddof=1) + epsilon))
+        )
+
+        # Handle edge cases where rolling std is NaN or 0
+        df[new_col] = df[new_col].fillna(
+            df.groupby('PCODE')[feature]
+            .transform(lambda x: (x - x.mean()) / (x.std(ddof=1) + epsilon))
+        )
+
     return df, new_feature_names
 
 
@@ -453,8 +443,18 @@ def get_pca_profiles(profiling_df, admin0_df, profile_features, n_components=5, 
             full_profiles.loc[country, 'long_term_avg_yield'] = prod_profiles.loc[country, 'long_term_avg_yield']
     
     print(f"   Full profiles created for: {sorted(full_profiles.index.tolist())}")
-    # Remove any countries with NaN environmental data
-    full_profiles = full_profiles.dropna()
+
+    # Fill NaN values with global means instead of dropping countries
+    if full_profiles.isnull().any().any():
+        print(f"   Filling {full_profiles.isnull().sum().sum()} NaN values with global means")
+        for col in full_profiles.columns:
+            if full_profiles[col].isnull().any():
+                global_mean = full_profiles[col].mean()
+                if not np.isnan(global_mean):
+                    full_profiles[col].fillna(global_mean, inplace=True)
+
+    # Only drop countries that still have all NaN after filling
+    full_profiles = full_profiles.dropna(how='all')
 
     scaler = StandardScaler()
     pca = PCA(n_components=n_components)
@@ -478,32 +478,21 @@ def get_pca_profiles(profiling_df, admin0_df, profile_features, n_components=5, 
     return pca_profiles
 
 
-def get_analogue_strategy(target_profile, training_profiles, distance_threshold, min_analogues=2):
-    """Find closest training countries for any target country."""
+def get_analogue_strategy(target_profile, training_profiles, distance_threshold, min_analogues=3):
     distances = training_profiles.apply(lambda row: euclidean(row, target_profile), axis=1)
     close_analogues = distances[distances < distance_threshold]
-    
     if len(close_analogues) >= min_analogues:
-        # Use specialist model with closest analogues
         similarity_weights = 1 / (close_analogues + epsilon)
         normalized_weights = (similarity_weights / similarity_weights.sum()).to_dict()
         return 'specialist', normalized_weights
     else:
-        # Fallback: use top 3-5 closest countries even if beyond threshold
-        top_analogues = distances.nsmallest(min(5, len(distances)))
-        if len(top_analogues) >= 2:
-            similarity_weights = 1 / (top_analogues + epsilon)
-            normalized_weights = (similarity_weights / similarity_weights.sum()).to_dict()
-            return 'specialist_fallback', normalized_weights
-        else:
-            # Last resort: global model
-            return 'global', training_profiles.index.tolist()
+        return 'global', training_profiles.index.tolist()
 
 
-def predict_for_country_with_analogues(country_data, training_df, feature_columns, country_profiles, distance_threshold, scaler, pca, selected_features):
+def predict_for_country_with_analogues(country_data, training_df, feature_columns, country_profiles, distance_threshold, scaler, selected_features):
     """Predict for a specific country using analogue-based approach."""
     target_country = country_data['country'].iloc[0]
-    
+
     # Determine training strategy based on PCA profiles
     if target_country not in country_profiles.index:
         # Last resort: global strategy for countries without profiles
@@ -516,17 +505,16 @@ def predict_for_country_with_analogues(country_data, training_df, feature_column
         training_profiles = country_profiles.loc[training_countries]
         strategy, train_info = get_analogue_strategy(target_profile, training_profiles, distance_threshold)
 
-    if strategy in ['specialist', 'specialist_fallback']:
+    if strategy == 'specialist':
         analogue_weights = train_info
         analogue_countries = list(analogue_weights.keys())
         specialist_train_df = training_df[training_df['country'].isin(analogue_countries)].copy()
         if specialist_train_df.empty:
             print(f"   [{target_country}] No analogue data available - skipping")
             return country_data.copy()
-        
+
         weights_str = {k: f'{v:.3f}' for k, v in analogue_weights.items()}
-        strategy_label = "SPECIALIST" if strategy == 'specialist' else "SPECIALIST (fallback)"
-        print(f"   [{target_country}] {strategy_label} training on {len(analogue_countries)} analogues: {weights_str}")
+        print(f"   [{target_country}] SPECIALIST training on {len(analogue_countries)} analogues: {weights_str}")
         final_train_df = specialist_train_df
         sample_weights = specialist_train_df['country'].map(analogue_weights)
     else:
@@ -535,42 +523,40 @@ def predict_for_country_with_analogues(country_data, training_df, feature_column
         print(f"   [{target_country}] GLOBAL training on {len(fallback_countries)} countries: {fallback_countries}")
         final_train_df = global_train_df
         sample_weights = None
-    
-    # Train model on analogues/global data
+
+    # Train model on analogues/global data (no PCA)
     X_train_selected = final_train_df[selected_features].fillna(0)
     X_train_scaled = scaler.transform(X_train_selected)
-    X_train_pca = pca.transform(X_train_scaled)
     y_train = final_train_df['target']
-    
-    # Train final model
+
+    # Train final model directly on scaled features
     model = ExtraTreesRegressor(n_estimators=250, random_state=42, n_jobs=-1, min_samples_leaf=3)
-    model.fit(X_train_pca, y_train, sample_weight=sample_weights)
-    
+    model.fit(X_train_scaled, y_train, sample_weight=sample_weights)
+
     # Predict for target country
     X_target = country_data[selected_features].fillna(0)
     X_target_scaled = scaler.transform(X_target)
-    X_target_pca = pca.transform(X_target_scaled)
-    
+
     country_data = country_data.copy()
-    country_data['pred_target'] = model.predict(X_target_pca)
-    
+    country_data['pred_target'] = model.predict(X_target_scaled)
+
     return country_data
 
 
 def train_prediction_model_with_analogues(training_df, feature_columns):
     """Train components needed for analogue-based prediction."""
     print("Setting up analogue-based prediction model...")
-    
+
     # Feature selection with RFECV on all training data
     X_train = training_df[feature_columns].fillna(0)
     y_train = training_df['target']
     groups_train = training_df['country']
-    
+
     # RFECV with GroupKFold
     estimator = ExtraTreesRegressor(n_estimators=50, random_state=42, n_jobs=-1)
     n_groups = groups_train.nunique()
     cv = GroupKFold(n_splits=min(5, n_groups))
-    
+
     rfecv = RFECV(
         estimator=estimator,
         step=0.3,
@@ -579,7 +565,7 @@ def train_prediction_model_with_analogues(training_df, feature_columns):
         n_jobs=-1,
         min_features_to_select=max(10, min(20, len(feature_columns) // 5)),
     )
-    
+
     with tqdm_joblib(tqdm(desc="Feature selection for analogue model", total=None)):
         try:
             rfecv.fit(X_train, y_train, groups=groups_train)
@@ -589,20 +575,55 @@ def train_prediction_model_with_analogues(training_df, feature_columns):
             estimator.fit(X_train, y_train)
             importances = pd.Series(estimator.feature_importances_, index=feature_columns).sort_values(ascending=False)
             selected_features = importances.head(20).index.tolist()
-    
-    print(f"Selected {len(selected_features)} features for analogue-based prediction")
-    
-    # PCA setup (for feature transformation consistency)
+
+    print(f"Selected {len(selected_features)} features via RFECV/importance")
+
+    # Prepare data for correlation analysis
     X_train_selected = training_df[selected_features].fillna(0)
+
+    # Train importance model to get feature importances for correlation pruning
+    importance_model = ExtraTreesRegressor(n_estimators=100, random_state=42, n_jobs=-1)
+    importance_model.fit(X_train_selected, y_train)
+    feature_importances = pd.Series(importance_model.feature_importances_, index=selected_features).sort_values(ascending=False)
+
+    # Step 1.5: Correlation pruning - remove highly correlated features (>0.7), keeping most important ones
+    if len(selected_features) > 1:
+        # Calculate correlation matrix
+        corr_matrix = X_train_selected.corr().abs()
+
+        # Find features to remove due to high correlation
+        features_to_remove = set()
+        for i in range(len(selected_features)):
+            for j in range(i+1, len(selected_features)):
+                feat1, feat2 = selected_features[i], selected_features[j]
+                if feat1 not in features_to_remove and feat2 not in features_to_remove:
+                    if corr_matrix.loc[feat1, feat2] > 0.7:
+                        # Keep the more important feature
+                        imp1 = feature_importances[feat1] if feat1 in feature_importances.index else 0
+                        imp2 = feature_importances[feat2] if feat2 in feature_importances.index else 0
+                        if imp1 >= imp2:
+                            features_to_remove.add(feat2)
+                        else:
+                            features_to_remove.add(feat1)
+
+        # Apply pruning
+        selected_features = [f for f in selected_features if f not in features_to_remove]
+        print(f"    After correlation pruning (|corr| > 0.7): {len(selected_features)} features remain")
+
+        # Update training data with pruned features
+        X_train_selected = training_df[selected_features].fillna(0)
+        # Re-train importance model on pruned features
+        importance_model = ExtraTreesRegressor(n_estimators=100, random_state=42, n_jobs=-1)
+        importance_model.fit(X_train_selected, y_train)
+        feature_importances = pd.Series(importance_model.feature_importances_, index=selected_features).sort_values(ascending=False)
+
+    print(f"Final selected {len(selected_features)} features for analogue-based prediction")
+
+    # Setup scaler (no PCA)
     scaler = StandardScaler()
-    pca = PCA(n_components=min(10, len(selected_features), X_train_selected.shape[0] - 1))
-    
     X_train_scaled = scaler.fit_transform(X_train_selected)
-    X_train_pca = pca.fit_transform(X_train_scaled)
-    
-    print(f"PCA explained variance: {sum(pca.explained_variance_ratio_):.3f}")
-    
-    return scaler, pca, selected_features
+
+    return scaler, None, selected_features
 
 
 def merge_with_existing_yields(prediction_df, existing_yield_data):
@@ -655,6 +676,9 @@ def main():
     training_yield_df, training_rs_df, admin0_df, national_yields, all_trends_df = load_training_data(
         PROJECT_ROOT, training_countries
     )
+
+    # Keep a copy of original RS data for PCA profile features (before any processing)
+    raw_rs_df = training_rs_df.copy()
     
     # Step 2: Load prediction data from all_Africa_predictions dataset
     print("\n2. Loading prediction data...")
@@ -704,12 +728,16 @@ def main():
     trend_df = compute_national_trend(admin0_df)
     training_yield_df = training_yield_df.merge(trend_df, on=['country', 'year'], how='left')
     
-    # Apply preprocessing to training data using fixed features
+    # Apply preprocessing to training data using dynamic allowed_prefixes filtering
     training_rs_df, spatial_features = create_spatial_features(training_rs_df, BEST_CONFIG['space_config'])
-    essential_env_features = [col for col in FIXED_ENV_FEATURES if col in training_rs_df.columns]
+    essential_env_features = [col for col in training_rs_df.columns if any(prefix in col for prefix in allowed_prefixes) and not col in spatial_features]
     print(f"   - Applying temporal z-scores to {len(essential_env_features)} environmental features...")
     training_rs_df, temporal_z_features = add_temporal_loc10_zscores(training_rs_df, essential_env_features, window=10)
-    
+
+    # Determine PCA profile features from RAW environmental features (before spatial processing)
+    # This ensures consistency between training and prediction datasets
+    raw_env_features = [col for col in raw_rs_df.columns if any(prefix in col for prefix in allowed_prefixes)]
+
     # Merge features to training yield data
     merge_cols = [col for col in ['PCODE', 'year', 'country'] if col in training_rs_df.columns and col in training_yield_df.columns]
     feature_cols = spatial_features + temporal_z_features
@@ -748,8 +776,8 @@ def main():
     # Get list of training countries
     training_countries_list = training_yield_df['country'].unique().tolist()
     
-    # Create PCA profiles using fixed environmental features
-    profile_features = [f for f in FIXED_ENV_FEATURES if f in training_rs_df.columns]
+    # Create PCA profiles using RAW environmental features (consistent between training and prediction)
+    profile_features = raw_env_features
     
     # Combine training and prediction data for PCA profiles - ensure all countries get profiles
     print(f"   Creating profiles using training countries: {training_countries_list}")
@@ -782,8 +810,8 @@ def main():
     prediction_rs_df, spatial_features_pred = create_spatial_features(prediction_rs_df, BEST_CONFIG['space_config'])
     print(f"   - Created spatial features: {len(spatial_features_pred)}")
     
-    # 2. Temporal z-scores (using same fixed features as training)
-    essential_env_features_pred = [col for col in FIXED_ENV_FEATURES if col in prediction_rs_df.columns]
+    # 2. Temporal z-scores (using same dynamic filtering as training)
+    essential_env_features_pred = [col for col in prediction_rs_df.columns if any(prefix in col for prefix in allowed_prefixes) and not col in spatial_features_pred]
     print(f"   - Applying temporal z-scores to {len(essential_env_features_pred)} environmental features...")
     prediction_rs_df, temporal_z_features_pred = add_temporal_loc10_zscores(prediction_rs_df, essential_env_features_pred, window=10)
     print(f"   - Created temporal z-score features: {len(temporal_z_features_pred)}")
@@ -822,7 +850,7 @@ def main():
     
     # Set up analogue-based model components with available features
     print("\n7. Setting up analogue-based prediction model with available features...")
-    scaler, pca, selected_features = train_prediction_model_with_analogues(training_yield_df, valid_features)
+    scaler, _, selected_features = train_prediction_model_with_analogues(training_yield_df, valid_features)
     print(f"   - Model trained with {len(selected_features)} selected features")
     
     # Step 8: Make predictions using analogue-based approach
@@ -839,13 +867,12 @@ def main():
             
         # Predict for this country using analogue-based approach
         country_predictions = predict_for_country_with_analogues(
-            country_data, 
-            training_yield_df, 
-            valid_features, 
-            country_profiles, 
-            distance_threshold, 
-            scaler, 
-            pca, 
+            country_data,
+            training_yield_df,
+            valid_features,
+            country_profiles,
+            distance_threshold,
+            scaler,
             selected_features
         )
         
@@ -922,7 +949,7 @@ def main():
     # Step 8: Try to merge with existing yield data (only for overlapping countries)
     print("\n8. Merging with existing yield data where available...")
     try:
-        existing_yield_path = PROJECT_ROOT / "all_data" / "full_features" / "all_admin_gt0_merged_data_GLAM.csv"
+        existing_yield_path = PROJECT_ROOT / "RemoteSensing" / "HarvestStatAfrica" / "preprocessed_concat" / "all_admin_gt0_merged_data.csv"
         existing_yield_df = pd.read_csv(existing_yield_path)
         
         # Only use existing yields for golden cohort countries (where we have ground truth)

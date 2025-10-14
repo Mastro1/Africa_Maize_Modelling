@@ -3,6 +3,7 @@
 __pycache__/
 
 .env
+.cursor/
 
 # ignore shapefiles .shp .gpkg
 *.shp
@@ -25,6 +26,8 @@ __pycache__/
 *.html
 
 Paper/
+Model/model_predictions/
+EXPERIMENTAL_MODEL/
 
 GEMINI.md
 

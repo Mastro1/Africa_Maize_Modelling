@@ -24,7 +24,7 @@ import time
 import warnings
 import json
 from datetime import datetime
-from scipy.stats import pearsonr
+from scipy.stats import pearsonr, spearmanr
 
 warnings.filterwarnings("ignore")
 epsilon = 1e-9
@@ -35,16 +35,16 @@ allowed_prefixes = [
     'ndvi_', 'evi_', 
     'temp_2m_', 'soil_moisture_', 
     'max_dry_days_', 'heat_stress_days_', 
-    'drought',
+    'drought_',
 ]
 
 # Best configuration from structure search
 BEST_CONFIG = {
-    "objective": "normalized_residuals",
-    "space_config": "relative_only",
-    "crop_area_use": "exclude_crop_area",
-    "interaction_type": "soil_weather_interactions",
-    "gaez_method": "fao_relatively_adjusted"
+    "objective": "normalized_residuals", # possible: normalized_residuals, residuals
+    "space_config": "relative_only", # possible: None, relative_only, raw_stats_only, both_relative_and_raw
+    "crop_area_use": "exclude_crop_area", # possible: exclude_crop_area, include_crop_area
+    "interaction_type": "no_interactions", # possible: no_interactions, soil_weather_interactions, soil_comprehensive_interactions
+    "gaez_method": "raw_gaez" # possible: no_gaez, raw_gaez, relative_ranking, fao_adjusted, fao_relatively_adjusted
 }
 
 
@@ -86,11 +86,16 @@ def create_spatial_features(rs_df, space_config):
     """Create spatial features on rs_df based on configuration."""
     rs_df = rs_df.copy()
     spatial_features = []
-    
+
+    if space_config == 'None':
+        # Skip spatial feature creation - only temporal z-scores will be used
+        print(f"   - Skipping spatial features (space_config='None')")
+        return rs_df, spatial_features
+
     # Get environmental features from rs_df - limit to key features for performance
-    env_features = [col for col in rs_df.columns if any(prefix in col for prefix in allowed_prefixes)][:25]  # Limit features
+    env_features = [col for col in rs_df.columns if any(prefix in col for prefix in allowed_prefixes)]
     print(f"   - Creating spatial features for {len(env_features)} environmental features...")
-    
+
     if space_config in ['relative_only', 'both_relative_and_raw']:
         # Location z-scores within country - vectorized operation
         print(f"     - Computing country z-scores...")
@@ -101,7 +106,7 @@ def create_spatial_features(rs_df, space_config):
                 # Vectorized z-score calculation
                 rs_df[zscore_col] = (rs_df[feature] - rs_df['country'].map(country_stats[(feature, 'mean')])) / (rs_df['country'].map(country_stats[(feature, 'std')]) + epsilon)
                 spatial_features.append(zscore_col)
-    
+
     if space_config in ['raw_stats_only', 'both_relative_and_raw']:
         # Location temporal statistics - vectorized operation
         print(f"     - Computing location temporal statistics...")
@@ -114,7 +119,7 @@ def create_spatial_features(rs_df, space_config):
                 rs_df[mean_col] = rs_df['PCODE'].map(location_stats[(feature, 'mean')])
                 rs_df[std_col] = rs_df['PCODE'].map(location_stats[(feature, 'std')])
                 spatial_features.extend([mean_col, std_col])
-    
+
     return rs_df, spatial_features
 
 
@@ -307,24 +312,32 @@ def add_temporal_loc10_zscores(df: pd.DataFrame, base_features: list, window: in
     df = df.copy()
     new_feature_names = []
     print(f"     - Computing temporal z-scores for {len(base_features)} features...")
-    
+
+    # Sort once at the beginning
+    df = df.sort_values(['PCODE', 'year'])
+
     for i, feature in enumerate(base_features):
         if feature not in df.columns:
             continue
         if i % 5 == 0:  # Progress indicator
             print(f"       Processing feature {i+1}/{len(base_features)}: {feature}")
-        
+
         new_col = f"{feature}_loc10_zscore"
         new_feature_names.append(new_col)
-        df[new_col] = np.nan
-        
-        # Group processing with progress for large datasets
-        for pcode, g in df.groupby('PCODE'):
-            g_sorted = g.sort_values('year')
-            vals = g_sorted[feature].values
-            z = _compute_loc10_z_for_series(vals, window=window)
-            df.loc[g_sorted.index, new_col] = z
-    
+
+        # Vectorized approach: use groupby + rolling window
+        df[new_col] = (
+            df.groupby('PCODE')[feature]
+            .transform(lambda x: (x - x.rolling(window=window, center=True, min_periods=1).mean())
+                      / (x.rolling(window=window, center=True, min_periods=1).std(ddof=1) + epsilon))
+        )
+
+        # Handle edge cases where rolling std is NaN or 0
+        df[new_col] = df[new_col].fillna(
+            df.groupby('PCODE')[feature]
+            .transform(lambda x: (x - x.mean()) / (x.std(ddof=1) + epsilon))
+        )
+
     return df, new_feature_names
 
 
@@ -384,7 +397,7 @@ def run_model_fold_adaptive_rfecv(train_df, eval_df, yield_features, country_pro
         analogue_countries = list(analogue_weights.keys())
         specialist_train_df = train_df[train_df['country'].isin(analogue_countries)].copy()
         if specialist_train_df.empty:
-            return pd.DataFrame()
+            return pd.DataFrame(), []
         print(f"    [{eval_country}] Strategy: Specialist. Training on {len(analogue_countries)} close analogues")
         final_train_df = specialist_train_df
         sample_weights = specialist_train_df['country'].map(analogue_weights)
@@ -430,30 +443,68 @@ def run_model_fold_adaptive_rfecv(train_df, eval_df, yield_features, country_pro
         selected_features = importances.head(15).index.tolist()
     
     print(f"    Selected {len(selected_features)} features via RFECV/importance")
-    
-    # Step 2: PCA on selected features
+
+    # Prepare data for correlation analysis
     X_train_selected = final_train_df[selected_features].fillna(0)
+
+    # Train importance model to get feature importances for correlation pruning
+    importance_model = ExtraTreesRegressor(n_estimators=100, random_state=42, n_jobs=-1)
+    importance_model.fit(X_train_selected, y_train, sample_weight=sample_weights)
+    feature_importances = pd.Series(importance_model.feature_importances_, index=selected_features).sort_values(ascending=False)
+
+    # Step 1.5: Correlation pruning - remove highly correlated features (>0.7), keeping most important ones
+    if len(selected_features) > 1:
+        # Calculate correlation matrix
+        corr_matrix = X_train_selected.corr().abs()
+
+        # Find features to remove due to high correlation
+        features_to_remove = set()
+        for i in range(len(selected_features)):
+            for j in range(i+1, len(selected_features)):
+                feat1, feat2 = selected_features[i], selected_features[j]
+                if feat1 not in features_to_remove and feat2 not in features_to_remove:
+                    if corr_matrix.loc[feat1, feat2] > 0.7:
+                        # Keep the more important feature
+                        imp1 = feature_importances[feat1] if feat1 in feature_importances.index else 0
+                        imp2 = feature_importances[feat2] if feat2 in feature_importances.index else 0
+                        if imp1 >= imp2:
+                            features_to_remove.add(feat2)
+                        else:
+                            features_to_remove.add(feat1)
+
+        # Apply pruning
+        selected_features = [f for f in selected_features if f not in features_to_remove]
+        print(f"    After correlation pruning (|corr| > 0.7): {len(selected_features)} features remain")
+
+        # Update training data and importance model with pruned features
+        X_train_selected = final_train_df[selected_features].fillna(0)
+        # Re-train importance model on pruned features
+        importance_model = ExtraTreesRegressor(n_estimators=100, random_state=42, n_jobs=-1)
+        importance_model.fit(X_train_selected, y_train, sample_weight=sample_weights)
+        feature_importances = pd.Series(importance_model.feature_importances_, index=selected_features).sort_values(ascending=False)
+
+    # Step 2: Prepare evaluation data
     X_eval_selected = eval_df[selected_features].fillna(0)
-    
-    # Apply PCA
-    scaler = StandardScaler()
-    pca = PCA(n_components=min(8, len(selected_features), X_train_selected.shape[0] - 1))
-    
-    X_train_scaled = scaler.fit_transform(X_train_selected)
-    X_train_pca = pca.fit_transform(X_train_scaled)
-    
-    X_eval_scaled = scaler.transform(X_eval_selected)
-    X_eval_pca = pca.transform(X_eval_scaled)
-    
-    print(f"    PCA explained variance: {sum(pca.explained_variance_ratio_):.3f}")
-    
-    # Step 3: Train final model on PCA components
+
+    # Step 3: Train final model directly on selected features
     final_model = ExtraTreesRegressor(n_estimators=250, random_state=42, n_jobs=-1, min_samples_leaf=5)
-    final_model.fit(X_train_pca, y_train, sample_weight=sample_weights)
+    final_model.fit(X_train_selected, y_train, sample_weight=sample_weights)
+    
+    # Prepare feature importance data for this fold
+    fold_feature_data = []
+    for i, (feature, importance) in enumerate(feature_importances.items()):
+        fold_feature_data.append({
+            'country': eval_country,
+            'feature_name': feature,
+            'importance': importance,
+            'rank': i + 1,
+            'strategy': strategy,
+            'n_selected_features': len(selected_features)
+        })
     
     # Predict
     eval_df = eval_df.copy()
-    eval_df['pred_target'] = final_model.predict(X_eval_pca)
+    eval_df['pred_target'] = final_model.predict(X_eval_selected)
     
     # Convert back to yield predictions
     if BEST_CONFIG['objective'] == 'residuals':
@@ -463,7 +514,7 @@ def run_model_fold_adaptive_rfecv(train_df, eval_df, yield_features, country_pro
     
     eval_df['pred_yield'] = eval_df['pred_yield'].clip(lower=0)
     
-    return eval_df
+    return eval_df, fold_feature_data
 
 
 def compute_country_r2_scores(df: pd.DataFrame) -> pd.DataFrame:
@@ -500,7 +551,7 @@ def compute_country_r2_scores(df: pd.DataFrame) -> pd.DataFrame:
     return pd.DataFrame(rows)
 
 
-def evaluate_and_report(model_name, results_df):
+def evaluate_and_report(model_name, results_df, temporal_agg=None, admin_metrics=None):
     print("\n" + "="*70 + f"\n      RESULTS FOR MODEL: {model_name}\n" + "="*70)
     country_metrics = []
     for country in sorted(results_df['country'].unique()):
@@ -524,10 +575,10 @@ def evaluate_and_report(model_name, results_df):
     print(f"  Countries with R2 > 0.3: {(summary_df['Yield R2'] > 0.3).sum()}/{len(summary_df.dropna())}\\n" + "-" * 35)
     
     # Create performance plot
-    plt.figure(figsize=(12, 8))
-    
+    plt.figure(figsize=(15, 12))
+
     # Plot 1: Country R2 scores
-    plt.subplot(2, 2, 1)
+    plt.subplot(3, 2, 1)
     summary_df['Yield R2'].plot(kind='bar')
     plt.axhline(y=0.3, color='red', linestyle='--', label='R2 = 0.3 threshold')
     plt.title('R2 Score by Country')
@@ -536,7 +587,7 @@ def evaluate_and_report(model_name, results_df):
     plt.legend()
     
     # Plot 2: Predictions vs Observations
-    plt.subplot(2, 2, 2)
+    plt.subplot(3, 2, 2)
     plt.scatter(results_df['yield'], results_df['pred_yield'], alpha=0.6)
     min_val = min(results_df['yield'].min(), results_df['pred_yield'].min())
     max_val = max(results_df['yield'].max(), results_df['pred_yield'].max())
@@ -545,27 +596,165 @@ def evaluate_and_report(model_name, results_df):
     plt.ylabel('Predicted Yield')
     plt.title(f'Predictions vs Observations (R2={avg_r2:.3f})')
     plt.legend()
-    
+
     # Plot 3: Residuals
-    plt.subplot(2, 2, 3)
+    plt.subplot(3, 2, 3)
     residuals = results_df['pred_yield'] - results_df['yield']
     plt.scatter(results_df['pred_yield'], residuals, alpha=0.6)
     plt.axhline(y=0, color='red', linestyle='--')
     plt.xlabel('Predicted Yield')
     plt.ylabel('Residuals')
     plt.title('Residual Plot')
-    
+
     # Plot 4: MAE by Country
-    plt.subplot(2, 2, 4)
+    plt.subplot(3, 2, 4)
     summary_df['Yield MAE'].plot(kind='bar', color='orange')
     plt.title('MAE by Country')
     plt.ylabel('Mean Absolute Error')
     plt.xticks(rotation=45)
+
+    # Plot 5: National Temporal Correlations
+    plt.subplot(3, 2, 5)
+    if temporal_agg is not None:
+        national_data = temporal_agg.dropna(subset=['temporal_r_national']).sort_values('temporal_r_national', ascending=True)
+        y_pos = np.arange(len(national_data))
+        plt.barh(y_pos, national_data['temporal_r_national'], color='#24245c', alpha=0.8)
+        plt.yticks(y_pos, national_data['country'])
+        plt.xlabel('Temporal Correlation (r)')
+        plt.title('National Temporal Correlation')
+        overall_median = national_data['temporal_r_national'].median()
+        plt.axvline(overall_median, color='green', linestyle=':', linewidth=1.5,
+                    label=f'Median: {overall_median:.3f}')
+        plt.legend(loc='lower right')
+        plt.xlim(-0.2, 1.0)
+    else:
+        plt.text(0.5, 0.5, 'No temporal data', transform=plt.gca().transAxes, ha='center', va='center')
+
+    # Plot 6: Local Temporal Correlation Distribution
+    plt.subplot(3, 2, 6)
+    if admin_metrics is not None and temporal_agg is not None:
+        countries = national_data['country'].tolist()
+        data_for_violin = []
+        valid_countries = []
+
+        for country in countries:
+            country_data = admin_metrics[admin_metrics['country'] == country]['temporal_r'].dropna()
+            if len(country_data) > 0:
+                data_for_violin.append(country_data.values)
+                valid_countries.append(country)
+            else:
+                data_for_violin.append(np.array([]))
+                valid_countries.append(country)
+
+        if data_for_violin:
+            parts = plt.violinplot(data_for_violin, positions=range(len(valid_countries)),
+                                 vert=False, showmedians=True, widths=0.7)
+            for pc in parts['bodies']:
+                pc.set_facecolor('steelblue')
+                pc.set_alpha(0.7)
+            parts['cmedians'].set_color('black')
+            parts['cmedians'].set_linewidth(1)
+
+            plt.yticks(range(len(valid_countries)), [])
+            plt.xlabel('Temporal Correlation (r)')
+            plt.title('Local Temporal Correlation Distribution')
+
+            all_temporal_r = admin_metrics['temporal_r'].dropna()
+            overall_median = np.median(all_temporal_r)
+            plt.axvline(overall_median, color='green', linestyle=':', linewidth=1.5,
+                        label=f'Median: {overall_median:.3f}')
+            plt.legend(loc='lower right')
+    else:
+        plt.text(0.5, 0.5, 'No temporal data', transform=plt.gca().transAxes, ha='center', va='center')
     
     plt.tight_layout()
     plt.show()
 
     return avg_r2
+
+
+def _safe_corr(x: np.ndarray, y: np.ndarray):
+    """Safe correlation computation."""
+    try:
+        if len(x) < 3 or np.nanstd(x) == 0 or np.nanstd(y) == 0:
+            return np.nan, np.nan
+        r, p = pearsonr(x, y)
+        return r, p
+    except Exception:
+        return np.nan, np.nan
+
+
+def compute_temporal_r_aggregated(df: pd.DataFrame) -> pd.DataFrame:
+    """Compute temporal correlation at national level."""
+    rows = []
+
+    for country, g in df.groupby("country", dropna=False):
+        years = sorted(g["year"].unique())
+
+        obs_national = []
+        pred_national = []
+
+        for year in years:
+            year_data = g[g["year"] == year]
+
+            obs_weight = year_data["crop_area_ha"]  # Use area for ground data comparison
+            obs_yield = year_data["yield"]
+            valid_obs = np.isfinite(obs_weight) & np.isfinite(obs_yield)
+
+            pred_weight = obs_weight
+            pred_yield = year_data["pred_yield"]
+            valid_pred = np.isfinite(pred_weight) & np.isfinite(pred_yield)
+
+            # Only compute national averages if we have valid data for both observed and predicted
+            if valid_obs.sum() > 0 and valid_pred.sum() > 0:
+                obs_national_val = np.average(obs_yield[valid_obs], weights=obs_weight[valid_obs])
+                pred_national_val = np.average(pred_yield[valid_pred], weights=pred_weight[valid_pred])
+
+                if np.isfinite(obs_national_val) and np.isfinite(pred_national_val):
+                    obs_national.append(obs_national_val)
+                    pred_national.append(pred_national_val)
+
+        if len(obs_national) >= 3:
+            temporal_r, temporal_p = _safe_corr(np.array(obs_national), np.array(pred_national))
+        else:
+            temporal_r = temporal_p = np.nan
+
+        rows.append({
+            "country": country,
+            "n_years": len(years),
+            "temporal_r_national": temporal_r,
+            "temporal_p_national": temporal_p,
+        })
+
+    return pd.DataFrame(rows)
+
+
+def per_admin_metrics(df: pd.DataFrame, weight_col: str = "crop_area_ha") -> pd.DataFrame:
+    """Compute comprehensive per-admin metrics including anomaly correlation and extreme events."""
+    rows = []
+    for (country, pcode), g in df.groupby(["country", "PCODE"], dropna=False):
+        g = g.sort_values("year")
+        y = g["yield"].values
+        p = g["pred_yield"].values
+        n = np.isfinite(y) & np.isfinite(p)
+        y = y[n]
+        p = p[n]
+        if len(y) < 3:
+            temporal_r = np.nan
+        else:
+            temporal_r, _ = _safe_corr(y, p)
+
+        weight = g[weight_col].mean() if weight_col in g.columns else g["crop_area_ha"].mean()
+        rows.append(
+            {
+                "country": country,
+                "PCODE": pcode,
+                "n_years": int(len(g)),
+                "weight": weight,
+                "temporal_r": temporal_r,
+            }
+        )
+    return pd.DataFrame(rows)
 
 
 def main():
@@ -615,7 +804,7 @@ def main():
     universe_df, spatial_features = create_spatial_features(universe_df, BEST_CONFIG['space_config'])
     
     # Apply temporal z-scores to the unified_df
-    essential_env_features = [col for col in universe_df.columns if any(prefix in col for prefix in allowed_prefixes)][:20]
+    essential_env_features = [col for col in universe_df.columns if any(prefix in col for prefix in allowed_prefixes) and not col in spatial_features]
     print(f"   - Applying temporal z-scores to {len(essential_env_features)} environmental features...")
     universe_df, temporal_z_features = add_temporal_loc10_zscores(universe_df, essential_env_features, window=10)
     
@@ -657,18 +846,18 @@ def main():
     print("\n4. Creating PCA profiles for analogue-based training...")
     
     # Create PCA profiles for country similarity (using the full rs_df is fine here)
-    env_features_for_pca = [col for col in rs_df_orig.columns if any(prefix in col for prefix in allowed_prefixes)][:30]
-    stress_features_for_pca = ['max_dry_days_plant_harv', 'heat_stress_days_plant_harv']
-    profile_features = [f for f in env_features_for_pca + stress_features_for_pca if f in rs_df_orig.columns]
+    env_features_for_pca = [col for col in rs_df_orig.columns if any(prefix in col for prefix in allowed_prefixes)]
+    profile_features = [f for f in env_features_for_pca if f in rs_df_orig.columns]
     
     pca_profiles = get_pca_profiles(rs_df_orig, admin0_df, profile_features, n_components=5)
     
-    print("\n5. Running cross-validation with Analogue-based RFECV+PCA...")
+    print("\n5. Running cross-validation with Analogue-based RFECV...")
     
     # Run cross-validation on the full dataset
     groups = yield_df['country']
     logo = LeaveOneGroupOut()
     all_predictions = []
+    all_feature_importance = []
     
     # We split the entire dataset, then filter for training
     for i, (train_idx, eval_idx) in enumerate(logo.split(yield_df, groups=groups)):
@@ -694,8 +883,14 @@ def main():
             distance_threshold = 0.0
         
         # Run enhanced model fold with analogue-based RFECV+PCA
-        result_df = run_model_fold_adaptive_rfecv(train_df, eval_df, valid_features, pca_profiles, distance_threshold)
+        result_df, fold_feature_data = run_model_fold_adaptive_rfecv(train_df, eval_df, valid_features, pca_profiles, distance_threshold)
+        
+        # Add fold number to feature data
+        for feature_info in fold_feature_data:
+            feature_info['fold'] = i + 1
+        
         all_predictions.append(result_df)
+        all_feature_importance.extend(fold_feature_data)
     
     # Combine results and evaluate
     print("\n6. Evaluating results...")
@@ -703,17 +898,41 @@ def main():
     
     # Compute scores (evaluation functions already handle NaNs in 'yield' column)
     scores_df = compute_country_r2_scores(results_df)
-    avg_r2 = evaluate_and_report("OPTIMIZED_MODEL_RFECV_PCA", results_df)
-    
+
+    # Compute temporal correlation metrics
+    print("\n7. Computing temporal correlation metrics...")
+    temporal_agg = compute_temporal_r_aggregated(results_df)
+    admin_metrics = per_admin_metrics(results_df)
+
+    avg_r2 = evaluate_and_report("OPTIMIZED_MODEL_RFECV", results_df, temporal_agg, admin_metrics)
+
+    # Print temporal correlation summary
+    print("\n--- Temporal Correlation Summary ---")
+    print("National Aggregated Temporal Correlations:")
+    for _, row in temporal_agg.dropna(subset=['temporal_r_national']).sort_values('temporal_r_national', ascending=False).iterrows():
+        print(f"{row['country']}: {row['temporal_r_national']:.3f}")
+    overall_median_national = temporal_agg['temporal_r_national'].median()
+    overall_median_local = admin_metrics['temporal_r'].median()
+    print(f"Overall median national temporal correlation: {overall_median_national:.3f}")
+    print(f"Overall median local temporal correlation: {overall_median_local:.3f}")
     # Save results
     results_dir = PROJECT_ROOT / "Model" / "training_results"
     results_dir.mkdir(exist_ok=True)
     results_df.to_csv(results_dir / "model_predictions.csv", index=False)
     scores_df.to_csv(results_dir / "model_scores.csv", index=False)
     
+    # Save feature importance data
+    if all_feature_importance:
+        feature_importance_df = pd.DataFrame(all_feature_importance)
+        # Sort by importance descending within each fold/country
+        feature_importance_df = feature_importance_df.sort_values(['fold', 'importance'], ascending=[True, False])
+        feature_importance_df.to_csv(results_dir / "feature_importance.csv", index=False)
+        print(f"Feature importance data saved to: {results_dir / 'feature_importance.csv'}")
+        print(f"Total feature selections across {len(set(feature_importance_df['fold']))} folds: {len(feature_importance_df)} entries")
+    
     total_time = (time.time() - start_time) / 60.0
     print(f"\n" + "="*80)
-    print(f"OPTIMIZED MODEL COMPLETE - Total time: {total_time:.1f} minutes")
+    print(f"OPTIMIZED MODEL WITH RFECV COMPLETE - Total time: {total_time:.1f} minutes")
     print(f"Average R2: {avg_r2:.3f}")
     print(f"Full predictions for {len(results_df)} location-years saved to: {results_dir}")
     print("="*80)

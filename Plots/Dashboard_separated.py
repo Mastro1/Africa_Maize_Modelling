@@ -89,8 +89,8 @@ def process_data_for_ag_year(data, year):
         df['doy'] = df['date'].dt.dayofyear
         df['year'] = df['date'].dt.year
     
-    # Calculate Mean Temp for all years on the main dataframe
-    era5_df['temp_mean'] = (era5_df['temperature_2m_max'] + era5_df['temperature_2m_min']) / 2
+    # Calculate Mean Temp for all years on the main dataframe (convert to Celsius)
+    era5_df['temp_mean'] = ((era5_df['temperature_2m_max'] + era5_df['temperature_2m_min']) / 2) - 273.15
     
     # --- 2. Define Agricultural Year Period ---
     p_doy = calendar['Maize_1_planting']
@@ -114,6 +114,12 @@ def process_data_for_ag_year(data, year):
     vi_year = vi_df[(vi_df['date'] >= start_date) & (vi_df['date'] <= end_date)].copy()
     ndwi_year = ndwi_df[(ndwi_df['date'] >= start_date) & (ndwi_df['date'] <= end_date)].copy()
     era5_year = era5_df[(era5_df['date'] >= start_date) & (era5_df['date'] <= end_date)].copy()
+
+    # Convert temperature columns from Kelvin to Celsius in current year data
+    # Note: temp_mean is already converted when calculated, so exclude it
+    temp_cols_year = [col for col in era5_year.columns if 'temperature' in col and 'temp_mean' not in col]
+    for col in temp_cols_year:
+        era5_year[col] = era5_year[col] - 273.15
     
     # --- 4. Calculate Climatologies (10-year mean, min, max) ---
     climatology_dfs = {}
@@ -126,13 +132,22 @@ def process_data_for_ag_year(data, year):
         'volumetric_soil_water_layer_1': ['mean', 'min', 'max'],
         'temp_mean': ['mean']
     }
+
+    # Temperature conversion factor from Kelvin to Celsius
+    temp_conversion = 273.15
     aggregations = {'vi': vi_agg, 'ndwi': ndwi_agg, 'era5': era5_agg}
 
     for df, name in zip([vi_df, ndwi_df, era5_df], ['vi', 'ndwi', 'era5']):
         climo_df_period = df[(df['year'] >= 2002) & (df['year'] < year)].copy()
         climatology = climo_df_period.groupby('doy').agg(aggregations[name]).reset_index()
         climatology.columns = ['_'.join(col).strip('_') for col in climatology.columns.values]
-        
+
+        # Convert temperature columns from Kelvin to Celsius
+        if name == 'era5':
+            temp_cols = [col for col in climatology.columns if 'temperature' in col or 'temp_mean' in col]
+            for col in temp_cols:
+                climatology[col] = climatology[col] - temp_conversion
+
         # Ensure climatology covers all days of the year by interpolating
         full_doy_range = pd.DataFrame({'doy': range(1, 367)})
         climatology = pd.merge(full_doy_range, climatology, on='doy', how='left').set_index('doy')
@@ -403,7 +418,7 @@ def generate_climate_dashboard(pcode="ZMB.2.3_2", year=2019):
     # Row 2: Mean Temperature Anomaly Plot
     if not era5_year.empty:
         temp_mean = era5_year['temp_mean']
-        threshold = 283.15
+        threshold = 10.0  # Base temperature for maize in Celsius (283.15 K - 273.15)
         # Add threshold line as a shape for better subplot support
         fig.add_shape(
             type="line",
@@ -419,7 +434,7 @@ def generate_climate_dashboard(pcode="ZMB.2.3_2", year=2019):
         fig.add_annotation(
             x=era5_year['date'].mean(),  # Center horizontally
             y=threshold + 1,  # Just above the line
-            text="Base Temperature Maize: 283.15 K",
+            text="Base Temperature Maize: 10°C",
             showarrow=False,
             font=dict(size=10, color="black"),
             row=2, col=3
@@ -445,26 +460,33 @@ def generate_climate_dashboard(pcode="ZMB.2.3_2", year=2019):
     fig.update_layout(
         title_text=f"Climate Dashboard for {location_name} - {year}",
         title_x=0.5,
-        height=600,
+        height=700,
         width=1200, # Increased width for better viewing
         showlegend=True,
-        legend=dict(title="Legend"),
+        legend=dict(
+            title="",
+            orientation="h",
+            y=-0.05,
+            x=0.5,
+            xanchor="center",
+            yanchor="top"
+        ),
         template="plotly_white",
         font=dict(family="Times New Roman", size=12),
         bargap=0
     )
 
     # Set y-axis range for mean temperature plot to make threshold visible
-    threshold = 283.15
+    threshold = 10.0
     fig.update_yaxes(range=[threshold - 5, era5_year['temp_mean'].max() + 5], row=2, col=3)
 
     # Add y-axis labels for all subplots
     fig.update_yaxes(title_text="Precipitation (mm)", row=1, col=1)
     fig.update_yaxes(title_text="Cumulative Precipitation (mm)", row=1, col=2)
     fig.update_yaxes(title_text="Soil Moisture (m³/m³)", row=1, col=3)
-    fig.update_yaxes(title_text="Temperature (K)", row=2, col=1)
-    fig.update_yaxes(title_text="Temperature (K)", row=2, col=2)
-    fig.update_yaxes(title_text="Temperature (K)", row=2, col=3)
+    fig.update_yaxes(title_text="Temperature (°C)", row=2, col=1)
+    fig.update_yaxes(title_text="Temperature (°C)", row=2, col=2)
+    fig.update_yaxes(title_text="Temperature (°C)", row=2, col=3)
 
     # Hide x-axis labels for top row subplots (only show on bottom row)
     fig.update_xaxes(showticklabels=False, row=1, col=1)
