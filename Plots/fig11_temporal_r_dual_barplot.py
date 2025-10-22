@@ -106,7 +106,7 @@ def create_temporal_r_dual_barplot():
 
     # Save the figure
     output_path = output_dir / "temporal_r_dual_barplot.png"
-    fig.savefig(output_path, dpi=200, bbox_inches='tight')
+    fig.savefig(output_path, dpi=300, bbox_inches='tight')
     plt.close(fig)
 
     print(f"Dual temporal r barplot saved to: {output_path}")

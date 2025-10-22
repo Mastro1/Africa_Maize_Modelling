@@ -1,7 +1,13 @@
 import pandas as pd
 import io
-import plotly.graph_objects as go
-import plotly.express as px
+import matplotlib.pyplot as plt
+import numpy as np
+from math import pi
+import os
+
+# Set font family to match the plotly version
+plt.rcParams['font.family'] = 'Times New Roman'
+plt.rcParams['font.size'] = 12
 
 markdown_table_string = """
 | Rank         | Country                      | Score | Years | Temporal | Locations | Loc. Comp. | Maize% | Yield CV | Flag%    | Assessment       |
@@ -80,7 +86,7 @@ df['Flag% Inverted'] = 1 - (df['Flag%'] / 100)
 # Define countries and variables for the radar plot
 countries_to_plot = ['Zimbabwe', 'Zambia', 'Ghana', 'Uganda']
 variables = ['Years', 'Locations', 'Loc. Comp.', 'Maize%', 'Yield CV', 'Flag% Inverted']
-variable_names = ['Years', 'Locations', 'Location Completeness', 'Maize Area %', 'Yield CV', 'Flag Rate (Inverted)']
+variable_names = ['Years', 'Locations', 'Location \nCompleteness', 'Maize Area %', 'Yield CV', 'Flag Rate \n(Inverted)']
 
 
 # Filter data for the selected countries
@@ -96,68 +102,84 @@ for var in variables:
         df_plot[f'{var}_norm'] = 0
 
 
+def create_radar_plot(df_plot, countries_to_plot, variables, variable_names):
+    # Number of variables
+    N = len(variables)
+    
+    # Compute angle for each axis
+    angles = [n / float(N) * 2 * pi for n in range(N)]
+    angles += angles[:1]  # Complete the circle
+    
+    # Define custom colors to match the plotly default colors
+    # These are the default colors from Plotly's qualitative.Plotly
+    custom_colors = ['#636efa', '#ef553b', '#00cc96', '#ab63fa']  # Blue, Red, Green, Purple
+    
+    # Create the plot
+    fig, ax = plt.subplots(figsize=(6, 6), subplot_kw=dict(projection='polar'))
+    
+    # Set font properties
+    ax.set_theta_offset(pi / 2)
+    ax.set_theta_direction(-1)
+    
+    # Draw one axe per variable + add labels
+    ax.set_xticks(angles[:-1])
+    # Use full variable names but with custom alignment
+    labels = ax.set_xticklabels(variable_names, fontsize=12)
+    
+    # Custom alignment based on position:
+    # Top (0 degrees) and bottom (180 degrees) - center
+    # Right side (0-90 and 270-360 degrees) - left align
+    # Left side (90-270 degrees) - right align
+    for label, angle in zip(ax.get_xticklabels(), angles[:-1]):
+        # Convert angle to degrees for easier comparison
+        angle_deg = angle * 180 / pi
+        
+        # Normalize angle to be between 0 and 360
+        if angle_deg < 0:
+            angle_deg += 360
+        
+        # Adjust alignment based on position
+        if angle_deg == 0 or angle_deg == 180:  # Top and bottom
+            label.set_horizontalalignment('center')
+        elif 0 < angle_deg < 180:  # Right side (including top-right and bottom-right)
+            label.set_horizontalalignment('left')
+        else:  # Left side (including top-left and bottom-left)
+            label.set_horizontalalignment('right')
+
+    # Draw ylabels
+    ax.set_ylim(0, 1)
+    
+    # Plot data and fill area for each country
+    for i, country in enumerate(countries_to_plot):
+        country_data = df_plot[df_plot['Country'] == country]
+        values = country_data[[f'{var}_norm' for var in variables]].iloc[0].tolist()
+        values += values[:1]  # Complete the circle
+        
+        color = custom_colors[i % len(custom_colors)]
+        ax.plot(angles, values, linewidth=1, linestyle='solid', label=country, color=color)
+        
+        # Fill area with transparency
+        ax.fill(angles, values, color=color, alpha=0.1)  # 10% transparency as in original
+    
+    # Add title
+    plt.title('Country Reliability Radar Plot\n', size=14, fontweight='bold', pad=20, fontfamily='Times New Roman')
+    
+    # Add legend positioned closer to the radar
+    plt.legend(loc='upper right', bbox_to_anchor=(1, 1), fontsize=10)
+    
+    return fig
+
 # Create the radar plot
-fig = go.Figure()
+fig = create_radar_plot(df_plot, countries_to_plot, variables, variable_names)
 
-for country in countries_to_plot:
-    country_data = df_plot[df_plot['Country'] == country]
-    values = country_data[[f'{var}_norm' for var in variables]].iloc[0].tolist()
-    # To close the radar chart
-    values.append(values[0])
-    
-    fig.add_trace(go.Scatterpolar(
-        r=values,
-        theta=variable_names + [variable_names[0]], # close the loop
-        fill='toself',
-        name=country
-    ))
+# Ensure output directory exists
+output_dir = os.path.join(os.getcwd(), "Plots", "output")
+os.makedirs(output_dir, exist_ok=True)
 
-transparency = 0.1
+# Save the plot with high DPI
+output_path = os.path.join(output_dir, "reliability_radar_plot.png")
+fig.savefig(output_path, dpi=300, bbox_inches='tight')
+print(f"Radar plot saved to '{output_path}'")
 
-# Set transparency for the fill without affecting the line
-for i, trace in enumerate(fig.data):
-    # Get the line color - if None, use Plotly's default color sequence
-    line_color = trace.line.color
-    if line_color is None:
-        # Use Plotly's default color sequence for the given index
-        default_colors = px.colors.qualitative.Plotly
-        color_index = i % len(default_colors)
-        line_color = default_colors[color_index]
-    
-    # Convert color to rgba with alpha
-    if line_color.startswith('rgb'):
-        rgba_color = line_color.replace('rgb', 'rgba').replace(')', f', {transparency})')  # alpha=0.3
-    elif line_color.startswith('#'):
-        # Convert hex to rgba
-        hex_color = line_color.lstrip('#')
-        rgb = tuple(int(hex_color[i:i+2], 16) for i in (0, 2, 4))
-        rgba_color = f'rgba({rgb[0]}, {rgb[1]}, {rgb[2]}, {transparency})'
-    else:
-        # For named colors or other formats, use a fallback
-        rgba_color = f'rgba(0,0,0,{transparency})'
-    
-    trace.fillcolor = rgba_color
-
-fig.update_layout(
-  polar=dict(
-    radialaxis=dict(
-      visible=True,
-      range=[0, 1]
-    )),
-  font=dict(
-        family="Times New Roman",
-        size=12  # Font family
-    ),
-  showlegend=True,
-  legend=dict(x=0.72, y=0.8, xanchor='left', yanchor='middle'),
-  title="Country Reliability Radar Plot",
-  title_x=0.5,
-  title_xanchor='center',
-  height=600,
-  width=800
-)
-
-
-# fig.show()
-fig.write_html('Plots/output/reliability_radar_plot.html')
-print("\nRadar plot saved to 'Plots/output/reliability_radar_plot.html'")
+# Show the plot
+plt.show()

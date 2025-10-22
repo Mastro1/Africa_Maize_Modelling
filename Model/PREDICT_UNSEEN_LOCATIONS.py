@@ -971,7 +971,7 @@ def main():
     results_dir.mkdir(exist_ok=True)
     
     # Select key columns for output - check what's available in the dataset
-    base_columns = ['PCODE', 'country', 'year']
+    base_columns = ['PCODE', 'admin1', 'admin2', 'country', 'year']
     if 'season_index' in final_df.columns:
         base_columns.append('season_index')
     

@@ -1,9 +1,13 @@
 import pandas as pd
 import numpy as np
-import plotly.graph_objects as go
-from plotly.subplots import make_subplots
+import matplotlib.pyplot as plt
+from matplotlib.patches import Rectangle
+import matplotlib.dates as mdates
+from matplotlib.collections import PolyCollection
+from matplotlib.lines import Line2D
 import os
 from pathlib import Path
+
 
 def load_data(pcode, base_path):
     """
@@ -62,6 +66,7 @@ def load_data(pcode, base_path):
         "calendar": pcode_calendar,
         "location_name": location_name
     }
+
 
 def process_data_for_ag_year(data, current_year, years_back=5):
     """
@@ -173,11 +178,12 @@ def process_data_for_ag_year(data, current_year, years_back=5):
         "calendar_plot_doy": calendar_plot_doy
     }
 
-def generate_ndvi_evi_historical_dashboard(pcode="ZMB.2.3_2", current_year=2019):
+
+def generate_ndvi_evi_historical_dashboard_matplotlib(pcode="ZMB.2.3_2", current_year=2019):
     """
-    Generates a historical NDVI and EVI dashboard showing past 5 years with transparency.
+    Generates a matplotlib historical NDVI and EVI dashboard showing past 5 years with transparency.
     """
-    print(f"Generating NDVI/EVI historical dashboard for PCODE: {pcode}, Year: {current_year}")
+    print(f"Generating matplotlib NDVI/EVI historical dashboard for PCODE: {pcode}, Year: {current_year}")
 
     # Define paths
     base_path = Path.cwd()
@@ -197,14 +203,15 @@ def generate_ndvi_evi_historical_dashboard(pcode="ZMB.2.3_2", current_year=2019)
     print("Step 2: Processing historical data...")
     processed_data = process_data_for_ag_year(data, current_year)
 
-    # --- 3. Visualization ---
-    print("Step 3: Creating NDVI/EVI historical visualization...")
+    # --- 3. Visualization with Matplotlib ---
+    print("Step 3: Creating matplotlib NDVI/EVI historical visualization...")
 
-    fig = make_subplots(
-        rows=1, cols=1,
-        vertical_spacing=0.10,
-        horizontal_spacing=0.06
-    )
+    fig, ax = plt.subplots(figsize=(12, 6))
+    
+    # Set the font to Times New Roman
+    plt.rcParams['font.family'] = 'Times New Roman'
+    
+    fig.suptitle(f"NDVI & EVI Historical Comparison for {location_name}", fontsize=16, fontfamily='Times New Roman')
 
     # Unpack processed data
     vi_historical = processed_data["vi_historical"]
@@ -214,33 +221,21 @@ def generate_ndvi_evi_historical_dashboard(pcode="ZMB.2.3_2", current_year=2019)
     ticktext = processed_data["ticktext"]
     calendar_plot_doy = processed_data["calendar_plot_doy"]
     
+    # Extract the end of season plot DOY for limiting x-axis
+    end_of_season_plot_doy = calendar_plot_doy.get('endofseaso', max(tickvals) if tickvals else 0)
+    
     # Add climatology plots first (background)
-    fig.add_trace(go.Scatter(
-        x=climatology['plot_doy'], y=climatology['NDVI_mean_max'], mode='lines', line=dict(width=0), showlegend=False
-    ), row=1, col=1)
-    fig.add_trace(go.Scatter(
-        x=climatology['plot_doy'], y=climatology['NDVI_mean_min'], mode='lines', line=dict(width=0),
-        fill='tonexty', fillcolor='rgba(211, 211, 211, 0.5)', name='10-Year Range', showlegend=True
-    ), row=1, col=1)
-
-    fig.add_trace(go.Scatter(
-        x=climatology['plot_doy'], y=climatology['NDVI_mean_mean'], mode='lines',
-        line=dict(color='grey', dash='dash'), name='10-Year Mean', showlegend=True
-    ), row=1, col=1)
-
+    # NDVI climatology range
+    if 'NDVI_mean_max' in climatology.columns and 'NDVI_mean_min' in climatology.columns:
+        ax.fill_between(climatology['plot_doy'], climatology['NDVI_mean_min'], climatology['NDVI_mean_max'], 
+                       color='lightgray', alpha=0.5, label='10-Year Range')
+        ax.plot(climatology['plot_doy'], climatology['NDVI_mean_mean'], color='gray', linestyle='--', label='10-Year Mean')
+    
+    # EVI climatology range if available
     if 'EVI_mean_max' in climatology.columns and 'EVI_mean_min' in climatology.columns:
-        fig.add_trace(go.Scatter(
-            x=climatology['plot_doy'], y=climatology['EVI_mean_max'], mode='lines', line=dict(width=0), showlegend=False
-        ), row=1, col=1)
-        fig.add_trace(go.Scatter(
-            x=climatology['plot_doy'], y=climatology['EVI_mean_min'], mode='lines', line=dict(width=0),
-            fill='tonexty', fillcolor='rgba(211, 211, 211, 0.3)', showlegend=False
-        ), row=1, col=1)
-
-        fig.add_trace(go.Scatter(
-            x=climatology['plot_doy'], y=climatology['EVI_mean_mean'], mode='lines',
-            line=dict(color='darkgrey', dash='dash'), showlegend=False
-        ), row=1, col=1)
+        ax.fill_between(climatology['plot_doy'], climatology['EVI_mean_min'], climatology['EVI_mean_max'], 
+                       color='lightgray', alpha=0.3)
+        ax.plot(climatology['plot_doy'], climatology['EVI_mean_mean'], color='darkgray', linestyle='--')
 
     # Define colors for different years
     color_map = {
@@ -265,33 +260,25 @@ def generate_ndvi_evi_historical_dashboard(pcode="ZMB.2.3_2", current_year=2019)
         # Show both in legend for current year
         if year == current_year:
             if 'NDVI_mean' in year_data.columns:
-                fig.add_trace(go.Scatter(
-                    x=year_data['plot_doy'], y=year_data['NDVI_mean'], mode='lines',
-                    line=dict(color=color_map[year]['ndvi'], width=line_width),
-                    opacity=opacity, name=f'NDVI {year} (Current)', showlegend=True
-                ))
+                ax.plot(year_data['plot_doy'], year_data['NDVI_mean'], 
+                       color=color_map[year]['ndvi'], linewidth=line_width, 
+                       alpha=opacity, label=f'NDVI {year} (Current)')
             if 'EVI_mean' in year_data.columns:
-                fig.add_trace(go.Scatter(
-                    x=year_data['plot_doy'], y=year_data['EVI_mean'], mode='lines',
-                    line=dict(color=color_map[year]['evi'], width=line_width),
-                    opacity=opacity, name=f'EVI {year} (Current)', showlegend=True
-                ))
+                ax.plot(year_data['plot_doy'], year_data['EVI_mean'], 
+                       color=color_map[year]['evi'], linewidth=line_width, 
+                       alpha=opacity, label=f'EVI {year} (Current)')
         else:
             # Show one entry for historical years
             legend_shown = False
             if 'NDVI_mean' in year_data.columns:
-                fig.add_trace(go.Scatter(
-                    x=year_data['plot_doy'], y=year_data['NDVI_mean'], mode='lines',
-                    line=dict(color=color_map[year]['ndvi'], width=line_width),
-                    opacity=opacity, name=f'{year}', showlegend=not legend_shown
-                ))
+                ax.plot(year_data['plot_doy'], year_data['NDVI_mean'], 
+                       color=color_map[year]['ndvi'], linewidth=line_width, 
+                       alpha=opacity, label=f'{year}' if not legend_shown else "")
                 legend_shown = True
             if 'EVI_mean' in year_data.columns:
-                fig.add_trace(go.Scatter(
-                    x=year_data['plot_doy'], y=year_data['EVI_mean'], mode='lines',
-                    line=dict(color=color_map[year]['evi'], width=line_width),
-                    opacity=opacity, name=f'{year}', showlegend=False
-                ))
+                ax.plot(year_data['plot_doy'], year_data['EVI_mean'], 
+                       color=color_map[year]['evi'], linewidth=line_width, 
+                       alpha=opacity, label=f'{year}' if not legend_shown else "")
 
     # Add calendar lines and annotations
     stage_names = {'planting': 'Planting', 'vegetative': 'Vegetative', 'harvest': 'Harvest', 'endofseaso': 'End of Season'}
@@ -299,51 +286,47 @@ def generate_ndvi_evi_historical_dashboard(pcode="ZMB.2.3_2", current_year=2019)
     
     for stage, plot_doy in calendar_plot_doy.items():
         if pd.notna(plot_doy):
-            fig.add_vline(x=plot_doy, line_width=2, line_dash="dash", line_color=stage_colors[stage])
+            ax.axvline(x=plot_doy, color=stage_colors[stage], linestyle='--', linewidth=2, label='_nolegend_')
             
-            fig.add_annotation(
-                x=plot_doy + 3, y=0.02, text=stage_names[stage], showarrow=False,
-                textangle=90, font=dict(color=stage_colors[stage], size=12, family="Times New Roman"),
-                xref="x", yref="paper", xanchor="center", yanchor="bottom"
-            )
-    
-    # Add invisible traces for calendar legend
-    #fig.add_trace(go.Scatter(x=[None], y=[None], mode='lines', name='Planting', line=dict(color='green', dash='dash', width=2)))
-    #fig.add_trace(go.Scatter(x=[None], y=[None], mode='lines', name='Vegetative', line=dict(color='orange', dash='dash', width=2)))
-    #fig.add_trace(go.Scatter(x=[None], y=[None], mode='lines', name='Harvest', line=dict(color='red', dash='dash', width=2)))
-    #fig.add_trace(go.Scatter(x=[None], y=[None], mode='lines', name='End of Season', line=dict(color='saddlebrown', dash='dash', width=2)))
-    
-    # --- 4. Final Touches and Save ---
-    fig.update_layout(
-        title_text=f"NDVI & EVI Historical Comparison for {location_name}",
-        title_x=0.5,
-        height=600,
-        width=900,
-        showlegend=True,
-        legend=dict(
-            title="Legend", x=1.02, y=1.0, xanchor='left', yanchor='top',
-            bgcolor='rgba(255,255,255,0.9)', bordercolor='black', borderwidth=1,
-            font=dict(size=10)
-        ),
-        template="plotly_white",
-        font=dict(family="Times New Roman", size=12),
-        bargap=0,
-        xaxis=dict(
-            tickmode='array',
-            tickvals=tickvals,
-            ticktext=ticktext,
-            range=[min(tickvals), max(tickvals)]
-        )
-    )
+            # Add vertical text annotation
+            y_pos = ax.get_ylim()[0]  # Position at bottom of y-axis
+            ax.text(plot_doy + 1, y_pos + 0.01, stage_names[stage], 
+                   rotation=90, color=stage_colors[stage], fontsize=12, 
+                   fontfamily='Times New Roman', verticalalignment='bottom')
 
-    output_filename = f"{pcode.replace('.', '_')}_{current_year}_ndvi_evi_historical.html"
-    os.makedirs(dashboard_dir, exist_ok=True)
+    # Set x-axis ticks and labels
+    ax.set_xticks(tickvals)
+    ax.set_xticklabels(ticktext, rotation=45, ha="right", fontfamily='Times New Roman')
+    
+    # Add grid
+    ax.grid(True, axis='y', linestyle='-', alpha=0.3)
+    
+    # Add labels
+    ax.set_xlabel("Date", fontfamily='Times New Roman')
+    ax.set_ylabel("Index Value", fontfamily='Times New Roman')
+
+    # Add legend
+    legend = ax.legend(loc='upper left', bbox_to_anchor=(1.01, 1), borderaxespad=0, 
+                       fontsize=10, title="Legend")
+    legend.get_title().set_fontfamily('Times New Roman')
+
+    # Set x-axis limits to ensure the plot doesn't extend too far
+    ax.set_xlim(left=min(tickvals)+15, right=end_of_season_plot_doy + 15)  # +30 days (~1 month) after end of season
+
+    # Adjust layout to accommodate legend
+    plt.tight_layout()
+    plt.subplots_adjust(right=0.85)
+
+    # Save the dashboard
+    output_filename = f"{pcode.replace('.', '_')}_{current_year}_ndvi_evi_historical.png"
     output_path = dashboard_dir / output_filename
-    fig.write_html(output_path)
+    plt.savefig(output_path, dpi=300, bbox_inches='tight')
+    plt.close()
 
-    print(f"NDVI/EVI historical dashboard saved to: {output_path}")
+    print(f"Matplotlib NDVI/EVI historical dashboard saved to: {output_path}")
     return output_path
 
+
 if __name__ == "__main__":
-    output_path = generate_ndvi_evi_historical_dashboard(pcode="ZMB.2.3_2", current_year=2018)
+    output_path = generate_ndvi_evi_historical_dashboard_matplotlib(pcode="ZMB.2.3_2", current_year=2018)
     print(f"Dashboard generated at: {output_path}")
