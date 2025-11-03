@@ -5,7 +5,7 @@ This repository contains the source code and data for the research paper, "A Sca
 The primary goal is to create a consistent, robust, and spatially explicit maize yield dataset for Africa to support applications like index-based insurance, catastrophe modeling, and food security assessments.
 
 ## Results visualization
-![](Plots/output/africa_yield_anomalies_animation.gif)
+<img src="Plots/output/africa_yield_anomalies_animation.gif" width="600px" alt="Maize Yield Anomalies Animation (2000-2023)">
 
 ## Key Features
 
