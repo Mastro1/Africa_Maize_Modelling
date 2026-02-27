@@ -13,7 +13,7 @@ import os
 def load_country_timeseries(country):
     # Handle spaces in country names for filenames
     country_file = country.replace(" ", "_")
-    path = f"Model_physical/Input/{country_file}_admin2_VI_timeseries_GADM.csv"
+    path = f"RemoteSensing/GADM/extractions/{country_file}_admin2_VI_timeseries_GADM.csv"
     
     if not os.path.exists(path):
         raise FileNotFoundError(f"Missing input: {path}")
@@ -70,16 +70,37 @@ def build_temporal_estimate(sub_df, reference_df, target_pcode):
 # 4. SYNTHESIZE RAW + INITIAL
 # ============================================================
 
-def synthesize(raw, initial, floor_factor=0.7):
+def synthesize(raw, initial, floor_factor=0.7, high_season_mask=None):
     """
-    If raw is nan: use initial.
-    If raw < initial * floor_factor: negative noise (clouds) -> use initial * floor_factor.
-    Otherwise use raw.
+    CRITICAL CHANGE: We only want to replace values that are:
+    1. In the high season (historically high NDVI)
+    2. SHOW A DROP (likely clouds)
+    
+    Everything else (low season, or high season without drops) must remain RAW.
     """
-    syn = np.where(np.isnan(raw), initial, raw)
-    # Use initial (climatology) with a factor as floor to handle extreme cloud/noise dips
-    # Default 0.7 allows 30% drop from mean before lifting.
-    syn = np.where(raw < initial * floor_factor, initial * floor_factor, raw)
+    # Start with a copy of raw data
+    syn = raw.copy()
+    
+    # 1. Fill NaNs with initial (climatology) - standard practice to fill gaps
+    mask_nan = np.isnan(raw)
+    syn[mask_nan] = initial[mask_nan]
+    
+    # 2. Identify "drops" (raw < initial * floor)
+    with np.errstate(invalid='ignore'):
+        is_drop = raw < (initial * floor_factor)
+        
+    # 3. Apply High Season Filter
+    # We ONLY care about drops if they happen during the high season
+    if high_season_mask is not None:
+        # A valid "cloud to fix" is a drop AND in high season
+        cloud_pixels = is_drop & high_season_mask
+    else:
+        cloud_pixels = is_drop
+
+    # 4. Replace ONLY the cloud pixels with the climatology floor
+    # Everything else (low season data, high season good data) remains raw
+    syn[cloud_pixels] = initial[cloud_pixels] * floor_factor
+    
     return syn
 
 
@@ -89,40 +110,44 @@ def synthesize(raw, initial, floor_factor=0.7):
 
 def whittaker_smooth(y, lmbda=10, d=2, weights=None):
     """
-    Core Whittaker-Eilers smoother using sparse matrices.
+    Core Whittaker-Eilers smoother.
     """
     n = len(y)
     if weights is None:
         weights = np.ones(n)
     
     W = sp.diags(weights, format='csc')
-    
-    # Second order difference matrix D
     D = sp.diags([1, -2, 1], [0, 1, 2], shape=(n-2, n), format='csc')
-    
     A = W + lmbda * (D.T @ D)
     return spsolve(A, weights * y)
 
-def weighted_whittaker(syn, iters=3, lmbda=10):
+def weighted_whittaker(syn, iters=3, lmbda=10, high_season_mask=None):
     """
-    Whittaker smoothing with iterative lifting to follow the upper envelope (vegetation).
+    Standard iterative Whittaker. 
+    Now that 'syn' strictly preserves raw data (except for high-season clouds),
+    we can run a standard smoother on 'syn'.
     """
     if np.all(np.isnan(syn)): return syn
     
     current = syn.copy()
     for _ in range(iters):
         fitted = whittaker_smooth(current, lmbda=lmbda)
+        # Upper envelope logic: if smooth curve > current, lift current
         mask = current < fitted
         current[mask] = fitted[mask]
-    return current
+        
+    return fitted
 
 
 # ============================================================
 # 6. MAIN TEMPORAL WHITTAKER PIPELINE
 # ============================================================
 
-def run_whittaker_temporal(country, pcode_selected=None, floor_factor=0.7, lmbda=10, iters=3):
+def run_whittaker_temporal(country, pcode_selected=None, floor_factor=0.7, lmbda=10, iters=3,
+                          high_value_percentile=0.2):
     print(f"\n--- Running Whittaker Temporal Smoothing for {country} ---")
+    print(f"Parameters: floor={floor_factor}, lambda={lmbda}, iters={iters}, high_pct={high_value_percentile}")
+    
     df = load_country_timeseries(country)
     reference_df = compute_reference_curves(df)
 
@@ -130,21 +155,52 @@ def run_whittaker_temporal(country, pcode_selected=None, floor_factor=0.7, lmbda
     unique_pcodes = df["PCODE"].unique()
 
     for pcode in unique_pcodes:
-        print(f"Processing {pcode} ...")
-
         # Extract raw NDVI (sorted)
         sub_df = df[df["PCODE"] == pcode].sort_values("date")
         raw = sub_df["NDVI_mean"].values
 
         # Purely temporal initial estimate (Climatology)
         initial = build_temporal_estimate(sub_df, reference_df, pcode)
+        
+        # Calculate dynamic threshold mask (High Season)
+        if high_value_percentile > 0:
+            cutoff = np.nanpercentile(initial, (1.0 - high_value_percentile) * 100)
+            high_season_mask = initial >= cutoff
+        else:
+            high_season_mask = None
 
-        # Synthesis & Smoothing
-        syn = synthesize(raw, initial, floor_factor=floor_factor)
-        smoothed = weighted_whittaker(syn, lmbda=lmbda, iters=iters)
+        # 1. Create the 'Cleaned' dataset (Raw + Fixed Clouds)
+        syn = synthesize(raw, initial, floor_factor=floor_factor, high_season_mask=high_season_mask)
+        
+        # 2. Smooth the cleaned dataset
+        # We pass high_season_mask just to keep signature compatible, though logic is now in synthesize
+        smoothed_full = weighted_whittaker(syn, lmbda=lmbda, iters=iters)
+
+        # 3. CRITICAL STEP: MERGE RAW & SMOOTHED
+        # Goal: "I don't want to fit the rest... only on the top 20%... if we see a drop"
+        
+        final_curve = raw.copy() # Start with RAW (covers 80% low season + 20% high season good values)
+        
+        if high_season_mask is not None:
+             # Identify where we had drops in the high season
+            with np.errstate(invalid='ignore'):
+                 is_drop = raw < (initial * floor_factor)
+            
+            # The "Cloud Mask": High Season AND Drop
+            cloud_mask = high_season_mask & is_drop
+            
+            # Replace RAW with SMOOTHED only there
+            final_curve[cloud_mask] = smoothed_full[cloud_mask]
+            
+            # Handle NaNs in raw that might not be caught by is_drop (if any remain)
+            # If raw was NaN, we should use the smoothed value
+            final_curve[np.isnan(raw)] = smoothed_full[np.isnan(raw)]
+        else:
+             # If no mask (e.g. user disabled it), we return the full smooth
+            final_curve = smoothed_full
 
         out = sub_df.copy()
-        out["NDVI_Whittaker"] = smoothed
+        out["NDVI_Whittaker"] = final_curve
         results.append(out)
 
     final = pd.concat(results, ignore_index=True)

@@ -175,13 +175,7 @@ def verify_and_plot_v3(country, pcode_selected=None, years_to_plot=[2005, 2010, 
     print(f"Visualization saved to: {out_img}")
     plt.show()
 
-if __name__ == "__main__":
-    parser = argparse.ArgumentParser()
-    parser.add_argument("--country", type=str, default="Zambia")
-    args = parser.parse_args()
-    
-    #verify_and_plot_v3(args.country)
-
+def run_all():
     # prepare list of all countries
     crop_area = pd.read_csv(r"GADM\crop_areas\africa_crop_areas_glad_filtered.csv")
     countries = crop_area["country"].unique().tolist()
@@ -203,3 +197,12 @@ if __name__ == "__main__":
         except Exception as e:
             print(f"Failed to plot {country}: {str(e)}")
             continue
+
+if __name__ == "__main__":
+    parser = argparse.ArgumentParser()
+    parser.add_argument("--country", type=str, default="Zambia")
+    args = parser.parse_args()
+    
+    verify_and_plot_v3(args.country)
+
+

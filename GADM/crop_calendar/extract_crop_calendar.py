@@ -2,6 +2,7 @@ import geopandas as gpd
 import pandas as pd
 from shapely.geometry import Point
 from tqdm import tqdm
+import numpy as np
 
 def extract_crop_calendar():
     """
@@ -19,7 +20,7 @@ def extract_crop_calendar():
     try:
         admin1_path = 'GADM/gadm41_AFR_shp/gadm41_AFR_1_processed.shp'
         admin2_path = 'GADM/gadm41_AFR_shp/gadm41_AFR_2_processed.shp'
-        calendar_path = 'GEOGLAM/GEOGLAM_CM4EW_Calendars_V1.0.shp'
+        calendar_path = 'GEOGLAM/GEOGLAM_CM4EW_Calendars_V1.3.shp'
         
         admin1_gdf = gpd.read_file(admin1_path)
         admin2_gdf = gpd.read_file(admin2_path)
@@ -112,6 +113,8 @@ def extract_crop_calendar():
     results_df = pd.DataFrame(results)
 
     results_df.dropna(subset=['Maize_1_calendar_country'], inplace=True)
+    # new version (1.3) has a 0 as placeholder for missing values
+    results_df.replace(0, np.nan, inplace=True)
     
     output_path = 'GADM/crop_calendar/maize_crop_calendar_extraction.csv'
     print(f"Saving results to {output_path}...")

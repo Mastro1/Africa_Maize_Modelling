@@ -357,7 +357,7 @@ if __name__ == "__main__":
         print("Earth Engine failed to initialize. Exiting test run.")
     else:
         # Test parameters
-        test_country = "Ethiopia"
+        test_country = "Central African Republic"
         test_start_date = "2000-01-01" 
         test_end_date = "2025-12-31"
         # shapefile_path = 'Training\HarvestStatsAfrica\data\hvstat_africa_boundary_v1.0.gpkg'

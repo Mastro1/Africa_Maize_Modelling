@@ -31,6 +31,7 @@ Model/model_predictions/
 EXPERIMENTAL_MODEL/
 Plots\output\gif_frames\
 
+# AI agent
 GEMINI.md
 
 # ignore csv files
@@ -39,6 +40,8 @@ GEMINI.md
 
 # ignore ASR files
 Plots\fig13_GIF_ASR.py
+
+
 
 
 

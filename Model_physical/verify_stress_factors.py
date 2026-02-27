@@ -35,8 +35,9 @@ if current_dir not in sys.path:
 try:
     from model_v3 import MaizeYieldModelV3
     from verify_dynamic_calendar_v3 import calculate_dynamic_dates_v3, get_search_window
+    from STSG_smoothing import get_stsg_path
 except ImportError as e:
-    print(f"Error importing model_v3: {e}")
+    print(f"Error importing required modules: {e}")
     sys.exit(1)
 
 def run_stress_analysis(country="Zimbabwe"):
@@ -49,17 +50,16 @@ def run_stress_analysis(country="Zimbabwe"):
     CROP_AREA_FILE = os.path.join(BASE_DIR, "GADM", "crop_areas", "africa_crop_areas_glad_filtered.csv")
     OUTPUT_DIR = os.path.join(BASE_DIR, "Model_physical", "Results")
     
-    STSG_FILE = f"{country.replace(' ', '_')}_admin2_STSG_smoothed.csv"
-
     print(f"Initializing Model V3 for {country}...")
     model = MaizeYieldModelV3(
         data_dir=DATA_DIR,
+        gadm_data_dir=os.path.join(BASE_DIR, "RemoteSensing", "GADM", "extractions"),
         fpar_file=f"{country.replace(' ', '_')}_admin2_FPAR_timeseries_GLAD.csv",
         era5_new_file=f"{country.replace(' ', '_')}_admin2_new_ERA5_timeseries.csv",
         era5_gadm_file=f"{country.replace(' ', '_')}_admin2_ERA5_timeseries_GADM.csv",
         calendar_file=CALENDAR_FILE,
         output_dir=OUTPUT_DIR,
-        ndvi_stsg_file=STSG_FILE,
+        country=country,
         crop_area_file=CROP_AREA_FILE
     )
 
@@ -313,4 +313,4 @@ def plot_anomaly_check(df_yearly, output_dir, pcode):
     plt.close()
 
 if __name__ == "__main__":
-    run_stress_analysis()
+    run_stress_analysis("Zimbabwe")

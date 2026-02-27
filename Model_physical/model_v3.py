@@ -33,28 +33,26 @@ if current_dir not in sys.path:
 # Import V3 logic
 try:
     from verify_dynamic_calendar_v3 import calculate_dynamic_dates_v3, get_search_window
-    from verify_fpar_timeseries import prepare_stsg_data, run_stsg_on_pcode
+    from STSG_smoothing import run_stsg_ndvi, run_stsg_fpar, get_stsg_path
 except ImportError as e:
     print(f"Error importing V3 modules: {e}")
-    print("Ensure verify_dynamic_calendar_v3.py and verify_fpar_timeseries.py are in Model_physical/")
+    print("Ensure verify_dynamic_calendar_v3.py and STSG_smoothing.py are in Model_physical/")
     sys.exit(1)
 
 class MaizeYieldModelV3:
-    def __init__(self, data_dir, gadm_data_dir, fpar_file, era5_new_file, era5_gadm_file, calendar_file, output_dir, ndvi_stsg_file, crop_area_file=None):
+    def __init__(self, data_dir, gadm_data_dir, fpar_file, era5_new_file, era5_gadm_file, calendar_file, output_dir, country, crop_area_file=None):
         self.data_dir = data_dir
         self.gadm_data_dir = gadm_data_dir
         self.fpar_path = os.path.join(data_dir, fpar_file)
         self.era5_new_path = os.path.join(data_dir, era5_new_file)
         self.era5_gadm_path = os.path.join(gadm_data_dir, era5_gadm_file)
-        # NDVI STSG file needed for dynamic dates
-        self.ndvi_stsg_path = os.path.join("Model_physical", "Results", ndvi_stsg_file) if not os.path.isabs(ndvi_stsg_file) else ndvi_stsg_file
+        self.country = country
         
         self.calendar_path = calendar_file
         self.output_dir = output_dir
         self.crop_area_path = crop_area_file
         
-        if not os.path.exists(self.output_dir):
-            os.makedirs(self.output_dir)
+        os.makedirs(self.output_dir, exist_ok=True)
 
     def load_and_merge_data(self):
         print("Loading ERA5 Data Source 1 (New)...")
@@ -91,94 +89,68 @@ class MaizeYieldModelV3:
         print("Merging FPAR with ERA5...")
         df_daily = pd.merge(df_daily, df_fpar[['date', 'PCODE', 'FPAR_mean']], on=['date', 'PCODE'], how='left')
         
-        # Load NDVI STSG Data for Dynamic Dates
+        # Load NDVI STSG Data for Dynamic Dates (from Results/STSG/)
         print("Loading NDVI STSG Data for Dynamic Dates...")
-        if os.path.exists(self.ndvi_stsg_path):
+        ndvi_stsg_path = get_stsg_path(self.country, "ndvi")
+        if not os.path.exists(ndvi_stsg_path):
+            print(f"  NDVI STSG file not found. Generating via STSG_smoothing module...")
             try:
-                df_ndvi = pd.read_csv(self.ndvi_stsg_path, parse_dates=['date'])
-                # We need date, PCODE, and columns used by verification script (NDVI_STSG)
-                # verify_dynamic_calendar_v3 uses "NDVI_STSG" or "NDVI_mean"
+                ndvi_stsg_path = run_stsg_ndvi(self.country)
+            except Exception as e:
+                print(f"  Error generating NDVI STSG: {e}")
+                ndvi_stsg_path = None
+
+        if ndvi_stsg_path and os.path.exists(ndvi_stsg_path):
+            try:
+                df_ndvi = pd.read_csv(ndvi_stsg_path, parse_dates=['date'])
                 cols_ndvi = ['date', 'PCODE', 'NDVI_STSG']
                 if 'NDVI_STSG' not in df_ndvi.columns:
-                     if 'NDVI_mean' in df_ndvi.columns:
-                         cols_ndvi = ['date', 'PCODE', 'NDVI_mean']
-                     else:
-                         print("Warning: NDVI STSG file missing NDVI_STSG/NDVI_mean columns.")
-                
-                # Merge NDVI
+                    if 'NDVI_mean' in df_ndvi.columns:
+                        cols_ndvi = ['date', 'PCODE', 'NDVI_mean']
+                    else:
+                        print("Warning: NDVI STSG file missing expected columns.")
                 df_daily = pd.merge(df_daily, df_ndvi[cols_ndvi], on=['date', 'PCODE'], how='left')
                 print(f"  - Merged NDVI STSG data.")
             except Exception as e:
                 print(f"Error loading NDVI STSG: {e}")
         else:
-            print(f"Warning: NDVI STSG file not found at {self.ndvi_stsg_path}. Dynamic dates might fail.")
-            
+            print("Warning: NDVI STSG unavailable. Dynamic dates may fail.")
+
         return df_daily
 
     def preprocess_fpar(self, df):
         """
-        Applies STSG Smoothing to FPAR.
-        1. Run STSG on valid 8-day observations.
-        2. Interpolate to daily.
+        Loads pre-computed FPAR STSG from Results/STSG/.
+        If the file doesn't exist, generates it via STSG_smoothing module.
+        Then interpolates to daily resolution.
         """
-        print("Preprocessing FPAR (STSG Smoothing)...")
-        
-        # 1. work on valid data only (mimicking raw FPAR file)
-        df_valid = df.dropna(subset=['FPAR_mean']).copy()
-        
-        # 2. Prepare Reference Data
-        print("  - Building reference curves on valid data...")
-        ref_df = prepare_stsg_data(df_valid, col="FPAR_mean")
-        
-        # 3. Process per PCODE
-        pcodes = df_valid['PCODE'].unique()
-        print(f"  - Processing {len(pcodes)} PCODEs with STSG...")
-        
-        results_list = []
-        
-        count = 0
-        total = len(pcodes)
-        
-        for pcode in pcodes:
-            count += 1
-            if count % 20 == 0: print(f"    - {count}/{total}...", end='\r')
-            
-            # STSG on sparse data
+        print("Preprocessing FPAR (loading STSG from Results/STSG/)...")
+
+        fpar_stsg_path = get_stsg_path(self.country, "fpar")
+
+        if not os.path.exists(fpar_stsg_path):
+            print(f"  FPAR STSG file not found. Generating via STSG_smoothing module...")
             try:
-                # We pass df_valid (full distinct rows) to allow neighbor lookup
-                smoothed = run_stsg_on_pcode(df_valid, pcode, ref_df, col="FPAR_mean")
-                
-                # Get the subset to assign
-                # run_stsg_on_pcode sorts by date internally and returns array matching that sort order
-                pcode_subset = df_valid[df_valid['PCODE'] == pcode].sort_values('date').copy()
-                
-                if len(smoothed) == len(pcode_subset):
-                    pcode_subset['FPAR_STSG_Obs'] = smoothed
-                    # Clip
-                    pcode_subset['FPAR_STSG_Obs'] = pcode_subset['FPAR_STSG_Obs'].clip(0, 1)
-                else:
-                    pcode_subset['FPAR_STSG_Obs'] = pcode_subset['FPAR_mean'] # Fallback
-            except Exception:
-                pcode_subset = df_valid[df_valid['PCODE'] == pcode].copy()
-                pcode_subset['FPAR_STSG_Obs'] = pcode_subset['FPAR_mean']
-            
-            results_list.append(pcode_subset[['date', 'PCODE', 'FPAR_STSG_Obs']])
-            
-        print("\n  - Merging and Interpolating to Daily...")
-        if results_list:
-            df_stsg = pd.concat(results_list, ignore_index=True)
-            # Merge back to daily
-            df = pd.merge(df, df_stsg, on=['date', 'PCODE'], how='left')
-            
-            # Interpolate per PCODE
-            # Using groupby transform is clean
-            df['FPAR_smooth'] = df.groupby('PCODE')['FPAR_STSG_Obs'].transform(
-                lambda x: x.interpolate(method='linear', limit_direction='both').fillna(method='bfill').fillna(method='ffill').fillna(0)
-            )
-        else:
-            print("Warning: No STSG results generated. Using raw.")
-            df['FPAR_smooth'] = df['FPAR_mean'].fillna(0) # Should interpolate raw if STSG failed totally
-            
+                fpar_stsg_path = run_stsg_fpar(self.country)
+            except Exception as e:
+                print(f"  Error generating FPAR STSG: {e}")
+                print("  Falling back to raw FPAR.")
+                df['FPAR_smooth'] = df['FPAR_mean'].fillna(0)
+                return df
+
+        # Load and merge
+        print(f"  Loading: {fpar_stsg_path}")
+        df_fpar_stsg = pd.read_csv(fpar_stsg_path, parse_dates=['date'])
+        df = pd.merge(df, df_fpar_stsg[['date', 'PCODE', 'FPAR_STSG']],
+                      on=['date', 'PCODE'], how='left')
+
+        # Interpolate to daily per PCODE
+        print("  Interpolating FPAR STSG to daily...")
+        df['FPAR_smooth'] = df.groupby('PCODE')['FPAR_STSG'].transform(
+            lambda x: x.interpolate(method='linear', limit_direction='both')
+                       .fillna(method='bfill').fillna(method='ffill').fillna(0)
+        )
+
         return df
 
     def calculate_biophysical_variables(self, df):
@@ -422,11 +394,8 @@ if __name__ == "__main__":
     GADM_DATA_DIR = os.path.join(BASE_DIR, "RemoteSensing", "GADM", "extractions")
     CALENDAR_FILE = os.path.join(BASE_DIR, "GADM", "crop_calendar", "maize_crop_calendar_extraction.csv")
     CROP_AREA_FILE = os.path.join(BASE_DIR, "GADM", "crop_areas", "africa_crop_areas_glad_filtered.csv")
-    OUTPUT_DIR = os.path.join(BASE_DIR, "Model_physical", "Results")
-    COUNTRY = "Zambia"
-    
-    # Needs STSG file name
-    STSG_FILE = f"{COUNTRY.replace(' ', '_')}_admin2_STSG_smoothed.csv"
+    OUTPUT_DIR = os.path.join(BASE_DIR, "Model_physical", "Results", "V3_model")
+    COUNTRY = "Angola"
     
     model = MaizeYieldModelV3(
         data_dir=DATA_DIR,
@@ -436,7 +405,7 @@ if __name__ == "__main__":
         era5_gadm_file=f"{COUNTRY.replace(' ', '_')}_admin2_ERA5_timeseries_GADM.csv",
         calendar_file=CALENDAR_FILE,
         output_dir=OUTPUT_DIR,
-        ndvi_stsg_file=STSG_FILE,
+        country=COUNTRY,
         crop_area_file=CROP_AREA_FILE
     )
     
@@ -445,4 +414,9 @@ if __name__ == "__main__":
     # Auto-run FAO Verification
     import verify_fao
     print("\nRunning FAO Verification (V3)...")
-    verify_fao.verify_fao(country_name=COUNTRY, version='v3')
+    verify_fao.verify_fao(country_name=COUNTRY, input_results_dir=OUTPUT_DIR, version='v3')
+    
+    # Auto-run HSA Verification
+    import verify_hsa
+    print("\nRunning HarvestStat Africa Verification (V3)...")
+    verify_hsa.verify_hsa(country_name=COUNTRY, input_results_dir=OUTPUT_DIR, version='v3')
