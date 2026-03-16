@@ -4,6 +4,7 @@ import os
 import argparse
 import numpy as np
 from statsmodels.nonparametric.kernel_regression import KernelReg
+from sklearn.metrics import r2_score
 
 def smooth_data_kernel_regression(arr: np.array, years: np.array) -> np.ndarray:
     """
@@ -31,11 +32,14 @@ def verify_fao(country_name, input_results_dir=None, version='V6', save_output=T
     """
     Verifies model results against FAO data, aggregating dual seasons with 0.7/0.3 weighting.
     If save_output is False, it will not create plots or tables.
-    Returns: comparison DataFrame, corr_ker (kernel detrended correlation).
+    Returns: comparison DataFrame, corr_ker (kernel detrended correlation), r2_ker (kernel detrended R2).
     """
     # Defaults
     if input_results_dir is None:
-        input_results_dir = r'Model_physical/Results/V6_model'
+        if 'V7_Optuna' in version or 'V7_Final' in version:
+            input_results_dir = r'Model_physical/Results/V7_model_optimized'
+        else:
+            input_results_dir = r'Model_physical/Results/V6_model'
     
     # 1. Load Model Results if not provided
     if df_model is None:
@@ -64,7 +68,7 @@ def verify_fao(country_name, input_results_dir=None, version='V6', save_output=T
 
     if df_model.empty:
         print(f"Error: No data for {country_name} in model results.")
-        return None, None
+        return None, None, None
 
     # --- Sanity Checks & Outlier Removal ---
     print("\nApplying Sanity Checks:")
@@ -102,7 +106,7 @@ def verify_fao(country_name, input_results_dir=None, version='V6', save_output=T
     if df_area_country.empty:
         print(f"Error: No crop area data found for country '{country_name}'. Check spelling.")
         print(f"Available countries in area file (sample): {df_area['country'].unique()[:10]}...")
-        return None, None
+        return None, None, None
 
     # 3. Dual Season Aggregation at PCODE level
     # Weighting: 0.7 for Season 1, 0.3 for Season 2
@@ -141,7 +145,7 @@ def verify_fao(country_name, input_results_dir=None, version='V6', save_output=T
         print("Possible reasons: PCODE mismatch between model results and crop area data.")
         print(f"Model PCODEs sample: {df_annual_pcode['PCODE'].unique()[:5]}")
         print(f"Area PCODEs sample: {df_area_subset['PCODE'].unique()[:5]}")
-        return None, None
+        return None, None, None
 
     # 5. National Roll-up (Area-Weighted)
     print("Calculating national yield estimate...")
@@ -170,7 +174,7 @@ def verify_fao(country_name, input_results_dir=None, version='V6', save_output=T
         possible_matches = df_fao[df_fao['Area'].str.contains(country_name, case=False, na=False)]['Area'].unique()
         if len(possible_matches) > 0:
             print(f"Did you mean: {possible_matches}?")
-        return None, None
+        return None, None, None
 
     unit = df_fao_country['Unit'].iloc[0]
     scale = 1000.0 if unit == 'kg/ha' else (10000.0 if unit == 'hg/ha' else 1.0)
@@ -183,7 +187,7 @@ def verify_fao(country_name, input_results_dir=None, version='V6', save_output=T
     
     if comparison.empty:
         print("No overlapping years found.")
-        return None, None
+        return None, None, None
 
     # --- Detrending Analysis ---
     print("Performing detrending analysis...")
@@ -211,11 +215,17 @@ def verify_fao(country_name, input_results_dir=None, version='V6', save_output=T
     corr_lin = comparison['Model_Dev_Linear'].corr(comparison['FAO_Dev_Linear'])
     corr_ker = comparison['Model_Dev_Kernel'].corr(comparison['FAO_Dev_Kernel'])
     
+    try:
+        r2_ker = r2_score(comparison['FAO_Dev_Kernel'], comparison['Model_Dev_Kernel'])
+    except Exception:
+        r2_ker = np.nan
+    
     print(f"\nVerification Results for {country_name} (Dual Season V6):")
     print(f"Raw Correlation: {corr_orig:.4f}")
     print(f"Linear Detrended Correlation: {corr_lin:.4f}")
     print(f"Kernel Detrended Correlation: {corr_ker:.4f}")
-
+    print(f"Kernel Detrended R2: {r2_ker:.4f}")
+    
     # --- Plotting ---
     fig, axes = plt.subplots(3, 1, figsize=(10, 15), sharex=True)
     
@@ -259,17 +269,20 @@ def verify_fao(country_name, input_results_dir=None, version='V6', save_output=T
     
     if save_output:
         # Save results
-        output_plot = os.path.join(input_results_dir, f'{country_name}_fao_v6_dual_season_verification_optimization.png')
+        # Create dir if not exists
+        os.makedirs(input_results_dir, exist_ok=True)
+        
+        output_plot = os.path.join(input_results_dir, f'{country_name}_fao_v7_optimized_plot.png')
         plt.savefig(output_plot)
         print(f"Verification plot saved to: {output_plot}")
 
-        output_csv = os.path.join(input_results_dir, f'{country_name}_fao_v6_dual_season_table_optimization.csv')
+        output_csv = os.path.join(input_results_dir, f'{country_name}_fao_v7_optimized_table.csv')
         comparison.to_csv(output_csv, index=False)
         print(f"Verification table saved to: {output_csv}")
     
     plt.close(fig)
 
-    return comparison, corr_ker
+    return comparison, corr_ker, r2_ker
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="Verify Dual-Season Model against FAO")

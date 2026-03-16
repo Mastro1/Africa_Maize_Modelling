@@ -51,7 +51,7 @@ def preprocess_and_merge(df_vi, df_era5):
 USE_STSG_SMOOTHING = True    
 SOS_THRESHOLD_PERC = 0.20    
 EOS_THRESHOLD_PERC = 0.30   
-MIN_AMPLITUDE_SIGNAL = 0.05  
+MIN_AMPLITUDE_SIGNAL = 0.1  
 
 # Silking Logic
 SILKING_GDD_PERC = 0.50      # Target 50% of seasonal GDD for silking
@@ -172,7 +172,9 @@ def extract_season_strict(df_pcode, meta):
 
     peak_date = subset.loc[peak_idx, 'date']
     peak_val = subset.loc[peak_idx, 'NDVI_smooth']
-    v_min = subset['NDVI_smooth'].min()
+    v_min_idx = subset['NDVI_smooth'].idxmin()
+    v_min = subset.loc[v_min_idx, 'NDVI_smooth']
+    v_min_date = subset.loc[v_min_idx, 'date']
     amp = peak_val - v_min
     
     if amp < MIN_AMPLITUDE_SIGNAL: return None # No signal
@@ -271,6 +273,8 @@ def extract_season_strict(df_pcode, meta):
         'eos': eos_date,
         'gdd': gdd_total,
         'peak': peak_date,
+        'v_min': v_min,
+        'v_min_date': v_min_date,
         'method': method,
         'meta': meta
     }
@@ -279,6 +283,10 @@ def plot_season_strict(df_pcode, pcode, year, season_results, output_dir):
     """Plots all seasons associated with a specific Crop Year."""
     if not season_results: return
     
+    import matplotlib
+    matplotlib.rcParams["font.family"] = "Times New Roman"
+    matplotlib.rcParams["font.size"] = 12
+
     # Filter results for the specified year
     year_results = [res for res in season_results if res['meta']['year'] == year]
     if not year_results: return
@@ -302,35 +310,59 @@ def plot_season_strict(df_pcode, pcode, year, season_results, output_dir):
         meta = res['meta']
         s_idx = meta['season_idx']
         sos, eos, peak, silk = res['sos'], res['eos'], res['peak'], res.get('silk')
+        v_min, v_min_date = res['v_min'], res['v_min_date']
         c = colors.get(s_idx, 'black')
         
         # Plot Fence
-        ax1.axvspan(meta['fence_start'], meta['fence_end'], color=c, alpha=0.05, label=f'S{s_idx} Fence')
+        ax1.axvspan(meta['fence_start'], meta['fence_end'], color=c, alpha=0.03, label=f'S{s_idx} Fence')
         
         # Plot Static Window (for comparison)
-        ax1.axvspan(meta['static_sos'], meta['static_eos'], color=c, alpha=0.1, hatch='//')
+        ax1.axvspan(meta['static_sos'], meta['static_eos'], color=c, alpha=0.08, hatch='//')
 
         # Plot Peak
         peak_val = subset[subset['date'] == peak]['NDVI_smooth'].values[0]
         ax1.plot(peak, peak_val, marker='*', markersize=12, color=c, label=f'S{s_idx} Peak')
         
+        # Plot Min Value
+        ax1.plot(v_min_date, v_min, marker='v', markersize=10, color=c, label=f'S{s_idx} Min')
+        
         # Plot SOS/EOS
-        ax1.axvline(sos, color=c, linestyle='-', linewidth=2)
-        ax1.axvline(eos, color=c, linestyle='--', linewidth=2)
+        ax1.axvline(sos, color=c, linestyle='-', linewidth=2, label=f'S{s_idx} Dynamic SOS')
+        ax1.axvline(eos, color=c, linestyle='--', linewidth=2, label=f'S{s_idx} Dynamic EOS')
+        
+        # Plot Static SOS/EOS (Fixed Calendar)
+        ax1.axvline(meta['static_sos'], color='grey', linestyle=':', linewidth=1.5, alpha=0.6)
+        ax1.axvline(meta['static_eos'], color='grey', linestyle=':', linewidth=1.5, alpha=0.6)
+        
+        # Add labels for Static Lines
+        ax1.text(meta['static_sos'], ax1.get_ylim()[0] + 0.02, 'Static SOS', 
+                 rotation=90, verticalalignment='bottom', horizontalalignment='right', color='grey', fontsize=8, alpha=0.8)
+        ax1.text(meta['static_eos'], ax1.get_ylim()[0] + 0.02, 'Static EOS', 
+                 rotation=90, verticalalignment='bottom', horizontalalignment='right', color='grey', fontsize=8, alpha=0.8)
         
         # Plot Silking
         if silk:
-            ax1.axvline(silk, color=c, linestyle=':', linewidth=2, alpha=0.8)
-            ax1.text(silk, ax1.get_ylim()[0], f'Silk\n{silk.strftime("%b-%d")}', 
-                     rotation=90, verticalalignment='bottom', color=c, fontsize=9)
+            ax1.axvline(silk, color=c, linestyle=':', linewidth=2, alpha=0.8, label=f'S{s_idx} Silking')
+            ax1.text(silk, ax1.get_ylim()[0] + 0.01, f'Silk\n{silk.strftime("%b-%d")}', 
+                     rotation=90, verticalalignment='bottom', color=c, fontsize=12)
         
-        # Labeling
-        ax1.text(sos, ax1.get_ylim()[1], f'S{s_idx} SOS\n{sos.strftime("%b-%d")}', rotation=90, verticalalignment='top', color=c)
-        ax1.text(eos, ax1.get_ylim()[1], f'S{s_idx} EOS\n{eos.strftime("%b-%d")}', rotation=90, verticalalignment='top', color=c)
+        # Labeling (SOS/EOS)
+        ax1.text(sos + pd.Timedelta(days=1), ax1.get_ylim()[1], f'S{s_idx} SOS\n{sos.strftime("%b-%d")}', rotation=90, verticalalignment='top', color=c)
+        ax1.text(eos + pd.Timedelta(days=1), ax1.get_ylim()[1], f'S{s_idx} EOS\n{eos.strftime("%b-%d")}', rotation=90, verticalalignment='top', color=c)
+
+        # Season Details (Length and GDD) - Box in middle of season
+        s_len = (eos - sos).days
+        gdd_total = res.get('gdd', 0)
+        box_y = ax1.get_ylim()[0] + (ax1.get_ylim()[1] - ax1.get_ylim()[0]) * 0.2
+        ax1.text(sos + (eos - sos) / 2, box_y, 
+                f'S{s_idx} Length: {s_len} days\nGDD: {gdd_total:.0f}', 
+                color=c, horizontalalignment='center', fontweight='bold', 
+                bbox=dict(facecolor='white', alpha=0.6, edgecolor=c, boxstyle='round,pad=0.3'))
         
-    ax1.set_ylabel('NDVI')
-    ax1.set_title(f'Dynamic Season V3.4 (Strict Fenced) - {pcode} - {year}')
-    ax1.legend(loc='upper right', ncol=2)
+    ax1.set_ylabel('NDVI', fontfamily='Times New Roman', fontsize=12)
+    ax1.set_title(f'Dynamic Season V3.4 (Strict Fenced) - {pcode} - {year}', 
+                  fontsize=14, fontfamily='Times New Roman', loc='center')
+    ax1.legend(loc='upper right', ncol=2, fontsize=10)
     ax1.grid(True, alpha=0.3)
     ax1.xaxis.set_major_locator(mdates.MonthLocator())
     ax1.xaxis.set_major_formatter(mdates.DateFormatter('%b-%Y'))
@@ -338,7 +370,7 @@ def plot_season_strict(df_pcode, pcode, year, season_results, output_dir):
     plt.tight_layout()
     
     out_file = os.path.join(output_dir, f"{pcode}_{year}_v3.4_strict.png")
-    plt.savefig(out_file)
+    plt.savefig(out_file, dpi=300, bbox_inches="tight")
     plt.close()
 
 def run_country_calendar_v3_4(country, base_dir, allowed_pcodes=None, save_plots=False, output_plot_dir=None):
@@ -352,13 +384,22 @@ def run_country_calendar_v3_4(country, base_dir, allowed_pcodes=None, save_plots
     era5_dir = os.path.join(base_dir, "RemoteSensing", "GADM", "extractions")
     calendar_path = os.path.join(base_dir, "GADM", "crop_calendar", "maize_crop_calendar_extraction.csv")
     
-    # Files (Handle space in country name)
-    country_clean = country.replace(' ', '_')
-    vi_file = os.path.join(vi_dir, f"{country_clean}_admin2_VI_timeseries_GADM.csv")
-    era5_file = os.path.join(era5_dir, f"{country_clean}_admin2_ERA5_timeseries_GADM.csv")
+    # Files (Handle space and quotes in country name)
+    country_clean = country.replace(' ', '_').replace("'", "_")
     
-    if not os.path.exists(vi_file) or not os.path.exists(era5_file):
-        print(f"  Missing files for {country} (skipped: {os.path.basename(vi_file)} not found).")
+    found_files = False
+    for lvl in [2, 1]:
+        vi_file = os.path.join(vi_dir, f"{country_clean}_admin{lvl}_VI_timeseries_GADM.csv")
+        era5_file = os.path.join(era5_dir, f"{country_clean}_admin{lvl}_ERA5_timeseries_GADM.csv")
+        
+        if os.path.exists(vi_file) and os.path.exists(era5_file):
+            if lvl == 1:
+                print(f"  Note: Admin 2 not found for {country}, using Admin 1 instead.")
+            found_files = True
+            break
+            
+    if not found_files:
+        print(f"  Missing files for {country} (skipped: files for admin2 or admin1 not found).")
         return pd.DataFrame()
         
     df_vi = pd.read_csv(vi_file, parse_dates=['date'])
@@ -472,9 +513,17 @@ if __name__ == "__main__":
     # 1. Resolve Target PCODE if not provided
     if not target_pcode:
         print(f"Finding representative PCODE for {country}...")
-        vi_file = os.path.join(base_dir, "RemoteSensing", "GADM", "extractions", f"{country}_admin2_VI_timeseries_GADM.csv")
-        if os.path.exists(vi_file):
-            df_temp = pd.read_csv(vi_file)
+        country_clean = country.replace(' ', '_').replace("'", "_")
+        
+        resolved_vi_file = None
+        for lvl in [2, 1]:
+            vi_file = os.path.join(base_dir, "RemoteSensing", "GADM", "extractions", f"{country_clean}_admin{lvl}_VI_timeseries_GADM.csv")
+            if os.path.exists(vi_file):
+                resolved_vi_file = vi_file
+                break
+        
+        if resolved_vi_file:
+            df_temp = pd.read_csv(resolved_vi_file)
             target_pcode = df_temp.groupby('PCODE')['NDVI_mean'].count().idxmax()
             print(f"  - Selected: {target_pcode}")
 

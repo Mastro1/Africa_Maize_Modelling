@@ -20,7 +20,7 @@ def extract_crop_calendar():
     try:
         admin1_path = 'GADM/gadm41_AFR_shp/gadm41_AFR_1_processed.shp'
         admin2_path = 'GADM/gadm41_AFR_shp/gadm41_AFR_2_processed.shp'
-        calendar_path = 'GEOGLAM/GEOGLAM_CM4EW_Calendars_V1.3.shp'
+        calendar_path = 'GEOGLAM/GEOGLAM_CM4EW_Calendars_V1.0.shp'
         
         admin1_gdf = gpd.read_file(admin1_path)
         admin2_gdf = gpd.read_file(admin2_path)

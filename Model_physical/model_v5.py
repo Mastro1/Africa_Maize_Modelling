@@ -559,7 +559,7 @@ if __name__ == "__main__":
     CROP_AREA_FILE = os.path.join(BASE_DIR, "GADM", "crop_areas",
                                   "africa_crop_areas_glad_filtered.csv")
     OUTPUT_DIR = os.path.join(BASE_DIR, "Model_physical", "Results", "V5_model")
-    COUNTRY = "Kenya"
+    COUNTRY = "South Africa"
 
     # File names
     VI_FILE = os.path.join(GADM_DATA_DIR,

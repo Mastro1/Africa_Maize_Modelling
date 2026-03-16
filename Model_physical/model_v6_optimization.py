@@ -649,18 +649,18 @@ def run_model_v6_for_country(country, target_pcode=None, t_opt_val=25.0, save_re
     # -----------------------------------------------------------------
     import verify_fao_dual_season_optimization as verify_fao
     print(f"\nRunning FAO Verification (V6) for {country} (T_OPT={t_opt_val}°C)...")
-    comparison, corr_ker = verify_fao.verify_fao(country_name=country,
+    comparison, corr_ker, r2_ker = verify_fao.verify_fao(country_name=country,
                                                  input_results_dir=OUTPUT_DIR,
                                                  version='V6',
                                                  save_output=save_results,
                                                  df_model=df_results)
 
-    return df_results, corr_ker
+    return df_results, corr_ker, r2_ker
 
 def _eval_t_opt_wrapper(args):
     """ Helper function for multiprocessing the optimization loop. """
     t_val, country, target_pcode = args
-    _, corr_ker = run_model_v6_for_country(country, target_pcode, t_opt_val=float(t_val), save_results=False)
+    _, corr_ker, r2_ker = run_model_v6_for_country(country, target_pcode, t_opt_val=float(t_val), save_results=False)
     return t_val, corr_ker
 
 def optimize_country_temperature(country, target_pcode=None, bounds=(20, 32)):

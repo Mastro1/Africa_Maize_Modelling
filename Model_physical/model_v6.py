@@ -641,7 +641,7 @@ def run_model_v6_for_country(country, target_pcode=None):
     # -----------------------------------------------------------------
     # Auto-run Verifications
     # -----------------------------------------------------------------
-    import verify_fao_dual_season as verify_fao
+    import verify_fao_dual_season_relative as verify_fao
     print(f"\nRunning FAO Verification (V6) for {country}...")
     verify_fao.verify_fao(country_name=country,
                           input_results_dir=OUTPUT_DIR,

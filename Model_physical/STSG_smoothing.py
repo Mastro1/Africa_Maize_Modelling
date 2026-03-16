@@ -181,35 +181,39 @@ def run_stsg_on_pcode(df, target_pcode, ref_df, col, threshold, max_neighbors,
 # ============================================================
 
 def _load_data(country, variable):
-    """Load the appropriate timeseries data for a variable."""
-    country_clean = country.replace(" ", "_")
+    """Load the appropriate timeseries data for a variable, trying admin2 then falling back to admin1."""
+    country_clean = country.replace(" ", "_").replace("'", "_")
 
-    if variable == "ndvi":
-        path = os.path.join(BASE_DIR, "RemoteSensing", "GADM", "extractions",
-                            f"{country_clean}_admin2_VI_timeseries_GADM.csv")
-        col = NDVI_COL
-    elif variable == "fpar":
-        path = os.path.join(BASE_DIR, "Model_physical", "Input",
-                            f"{country_clean}_admin2_FPAR_timeseries_GLAD.csv")
-        col = FPAR_COL
-    else:
-        raise ValueError(f"Unknown variable: {variable}")
+    for lvl in [2, 1]:
+        if variable == "ndvi":
+            path = os.path.join(BASE_DIR, "RemoteSensing", "GADM", "extractions",
+                                f"{country_clean}_admin{lvl}_VI_timeseries_GADM.csv")
+            col = NDVI_COL
+        elif variable == "fpar":
+            path = os.path.join(BASE_DIR, "Model_physical", "Input",
+                                f"{country_clean}_admin{lvl}_FPAR_timeseries_GLAD.csv")
+            col = FPAR_COL
+        else:
+            raise ValueError(f"Unknown variable: {variable}")
 
-    if not os.path.exists(path):
-        raise FileNotFoundError(f"Input file not found: {path}")
+        if os.path.exists(path):
+            if lvl == 1:
+                print(f"  Note: Admin 2 not found for {country}, using Admin 1 instead.")
 
-    df = pd.read_csv(path, parse_dates=["date"])
-    df["doy"] = df["date"].dt.dayofyear
-    df["year"] = df["date"].dt.year
+            df = pd.read_csv(path, parse_dates=["date"])
+            df["doy"] = df["date"].dt.dayofyear
+            df["year"] = df["date"].dt.year
 
-    # Filter to known crop area PCODEs for quality reference curves
-    crop_area_path = os.path.join(BASE_DIR, "GADM", "crop_areas",
-                                  "africa_crop_areas_glad_filtered.csv")
-    if os.path.exists(crop_area_path):
-        crop_areas = pd.read_csv(crop_area_path)
-        df = df[df["PCODE"].isin(crop_areas["PCODE"])].copy()
+            # Filter to known crop area PCODEs for quality reference curves
+            crop_area_path = os.path.join(BASE_DIR, "GADM", "crop_areas",
+                                          "africa_crop_areas_glad_filtered.csv")
+            if os.path.exists(crop_area_path):
+                crop_areas = pd.read_csv(crop_area_path)
+                df = df[df["PCODE"].isin(crop_areas["PCODE"])].copy()
 
-    return df, col
+            return df, col
+
+    raise FileNotFoundError(f"Missing {variable.upper()} input for {country} (tried admin1 & admin2)")
 
 
 def _run_stsg_country(country, variable, col, output_col,

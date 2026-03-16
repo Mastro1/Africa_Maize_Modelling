@@ -41,6 +41,8 @@ GEMINI.md
 # ignore ASR files
 Plots\fig13_GIF_ASR.py
 
+# ignore png files
+*.png
 
 
 

@@ -45,8 +45,10 @@ def verify_fao(country_name, input_results_dir=None, version='v1'):
     # 1. Load Model Results
     model_results_path = os.path.join(input_results_dir, f'maize_yield_estimates_{version}.csv')
     if not os.path.exists(model_results_path):
-        print(f"Error: Model results not found at {model_results_path}")
-        return
+        model_results_path = os.path.join(input_results_dir, f'maize_yield_estimates_{version}_{country_name.replace(" ", "_")}.csv')
+        if not os.path.exists(model_results_path):
+            print(f"Error: Model results not found at {model_results_path}")
+            return
 
     print(f"Loading model results from {model_results_path}...")
     df_model = pd.read_csv(model_results_path)

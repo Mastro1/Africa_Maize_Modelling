@@ -38,10 +38,12 @@ def run_global_analysis():
         print(f"  Warning: {CROP_AREA_PATH} not found. Processing all locations.")
 
     # Files
-    vi_files = glob.glob(os.path.join(EXTRACTIONS_DIR, "*_admin2_VI_timeseries_GADM.csv"))
-    countries = sorted(list(set([os.path.basename(f).split('_admin2')[0] for f in vi_files])))
+    vi_files = glob.glob(os.path.join(EXTRACTIONS_DIR, "*_admin*_VI_timeseries_GADM.csv"))
+    countries = sorted(list(set([os.path.basename(f).split('_admin')[0] for f in vi_files])))
     
     print(f"Found {len(countries)} countries with Admin 2 VI data.", flush=True)
+    for c in countries:
+        print(c)
     
     all_country_results = []
     
