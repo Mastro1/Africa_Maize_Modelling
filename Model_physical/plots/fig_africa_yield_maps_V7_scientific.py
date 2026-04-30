@@ -66,6 +66,8 @@ def main():
     
     print("Calculating kernel detrended values...")
     detrended_df = calculate_detrended_values(df)
+
+    detrended_df.to_csv(os.path.join(PROJECT_ROOT, 'Model_physical', 'Results', 'Final_Database', 'Global_Maize_Yield_V7_detrended.csv'), index=False)
     
     # 2. Load Shapefiles
     admin2_gdf = gpd.read_file(os.path.join(PROJECT_ROOT, 'GADM', 'gadm41_AFR_shp', 'gadm41_AFR_2_processed.shp'))
@@ -148,29 +150,32 @@ def main():
         ax.yaxis.set_major_formatter(FuncFormatter(format_lat))
         
         # Show ticks on specific sides according to user request
-        # 0,0: Top & Left | 0,1: Top | 1,0: Left | 1,1: None
-        has_top = (i < 2)
+        # 0,0: Left | 0,1: None | 1,0: Bottom & Left | 1,1: Bottom
+        has_bottom = (i >= 2)
         has_left = (i % 2 == 0)
         
         ax.tick_params(axis='both', which='major', labelsize=8, direction='in', 
                        length=3, width=0.8, colors='black',
                        top=True, right=True, bottom=True, left=True,
-                       labeltop=has_top, labelleft=has_left, 
-                       labelbottom=False, labelright=False)
+                       labeltop=False, labelleft=has_left, 
+                       labelbottom=has_bottom, labelright=False)
         
         # 3. Gridlines
         ax.grid(True, linestyle='--', linewidth=0.3, color='#cccccc', alpha=0.5, zorder=0)
 
-        # 4. Title/Year label below map
-        ax.text(0.5, -0.1, f'{year} Detrended Yield Anomaly', transform=ax.transAxes, 
-                ha='center', va='top', fontsize=9, fontweight='bold')
+        # 4. Title/Year label on top
+        ax.set_title(f'{year} Detrended Yield Anomaly', fontsize=9, fontweight='bold', pad=10)
 
     # Colorbar
     cax = fig.add_axes([0.25, 0.08, 0.5, 0.02])
     sm = plt.cm.ScalarMappable(cmap=cmap, norm=plt.Normalize(vmin=vmin, vmax=vmax))
     sm._A = []
     cbar = fig.colorbar(sm, cax=cax, orientation='horizontal')
-    cbar.set_label('Yield Anomaly (Fractional Change)', fontsize=9)
+    
+    from matplotlib.ticker import PercentFormatter
+    cbar.ax.xaxis.set_major_formatter(PercentFormatter(1.0))
+    
+    cbar.set_label('Yield Anomaly (Percentage Change)', fontsize=9)
     cbar.ax.tick_params(labelsize=8)
 
     plt.subplots_adjust(wspace=0.1, hspace=0.2, bottom=0.15)

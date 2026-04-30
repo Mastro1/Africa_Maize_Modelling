@@ -300,7 +300,7 @@ def plot_season_strict(df_pcode, pcode, year, season_results, output_dir):
     subset = df_pcode[(df_pcode['date'] >= plot_start) & (df_pcode['date'] <= plot_end)]
     if subset.empty: return
 
-    fig, ax1 = plt.subplots(figsize=(14, 7))
+    fig, ax1 = plt.subplots(figsize=(14, 5))
     ax1.plot(subset['date'], subset['NDVI_mean'], color='#32CD32', label='Raw NDVI', alpha=0.5, linewidth=1)
     ax1.plot(subset['date'], subset['NDVI_smooth'], color='darkgreen', linewidth=2, label='Smoothed NDVI')
     

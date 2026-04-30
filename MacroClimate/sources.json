@@ -1,0 +1,22 @@
+{
+  "NAO": {
+    "data_file": "https://www.cpc.ncep.noaa.gov/products/precip/CWlink/pna/norm.nao.monthly.b5001.current.ascii.table",
+    "source_website": "https://www.ncei.noaa.gov/access/monitoring/nao/"
+  },
+  "DMI": {
+    "data_file": "ASR/macroClimate/dmi.had.long.csv",
+    "source_website": "https://psl.noaa.gov/data/timeseries/month/DMI/"
+  },
+  "NINO34": {
+    "data_file": "ASR/macroClimate/nina34.anom.csv",
+    "source_website": "https://psl.noaa.gov/data/timeseries/month/DS/Nino34_CPC/"
+  },
+  "TSA": {
+    "data_file": "ASR/macroClimate/tsa.csv",
+    "source_website": "https://psl.noaa.gov/data/timeseries/month/TSA/"
+  },
+  "EA": {
+    "data_file": "ASR/macroClimate/ea.csv",
+    "source_website": "https://psl.noaa.gov/data/timeseries/month/EA/"
+  }
+}

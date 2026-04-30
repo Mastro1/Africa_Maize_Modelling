@@ -172,12 +172,9 @@ def extract_season_strict(df_pcode, meta):
 
     peak_date = subset.loc[peak_idx, 'date']
     peak_val = subset.loc[peak_idx, 'NDVI_smooth']
-    # Search minimum only on the pre-peak (ascending) flank to avoid
-    # capturing the inter-season valley in two-season locations.
-    pre_peak = subset[subset['date'] <= peak_date]
-    v_min_idx = pre_peak['NDVI_smooth'].idxmin()
-    v_min = pre_peak.loc[v_min_idx, 'NDVI_smooth']
-    v_min_date = pre_peak.loc[v_min_idx, 'date']
+    v_min_idx = subset['NDVI_smooth'].idxmin()
+    v_min = subset.loc[v_min_idx, 'NDVI_smooth']
+    v_min_date = subset.loc[v_min_idx, 'date']
     amp = peak_val - v_min
     
     if amp < MIN_AMPLITUDE_SIGNAL: return None # No signal
@@ -303,7 +300,7 @@ def plot_season_strict(df_pcode, pcode, year, season_results, output_dir):
     subset = df_pcode[(df_pcode['date'] >= plot_start) & (df_pcode['date'] <= plot_end)]
     if subset.empty: return
 
-    fig, ax1 = plt.subplots(figsize=(14, 4))
+    fig, ax1 = plt.subplots(figsize=(14, 7))
     ax1.plot(subset['date'], subset['NDVI_mean'], color='#32CD32', label='Raw NDVI', alpha=0.5, linewidth=1)
     ax1.plot(subset['date'], subset['NDVI_smooth'], color='darkgreen', linewidth=2, label='Smoothed NDVI')
     
@@ -363,7 +360,7 @@ def plot_season_strict(df_pcode, pcode, year, season_results, output_dir):
                 bbox=dict(facecolor='white', alpha=0.6, edgecolor=c, boxstyle='round,pad=0.3'))
         
     ax1.set_ylabel('NDVI', fontfamily='Times New Roman', fontsize=12)
-    ax1.set_title(f'{pcode}', 
+    ax1.set_title(f'Dynamic Season V3.4 (Strict Fenced) - {pcode} - {year}', 
                   fontsize=14, fontfamily='Times New Roman', loc='center')
     ax1.legend(loc='upper left', bbox_to_anchor=(1, 1), ncol=1, fontsize=10)
     ax1.grid(True, alpha=0.3)
@@ -372,7 +369,7 @@ def plot_season_strict(df_pcode, pcode, year, season_results, output_dir):
     plt.xticks(rotation=45)
     plt.tight_layout()
     
-    out_file = os.path.join(output_dir, f"fig_calendar_{pcode}_{year}_v3.4_strict.png")
+    out_file = os.path.join(output_dir, f"{pcode}_{year}_v3.4_strict.png")
     plt.savefig(out_file, dpi=300, bbox_inches="tight")
     plt.close()
 
@@ -511,7 +508,7 @@ if __name__ == "__main__":
     country = args.country
     target_pcode = args.pcode
     base_dir = r"c:\Users\MassimoPoretti\Documents\Python Projects\Africa_Maize_Modelling"
-    output_dir = os.path.join(base_dir, "Model_physical", "plots", "output")
+    output_dir = os.path.join(base_dir, "Model_physical", "Results", "V3_4_Verification_Calendar")
     
     # 1. Resolve Target PCODE if not provided
     if not target_pcode:

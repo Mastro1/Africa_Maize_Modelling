@@ -4,6 +4,8 @@ __pycache__/
 
 .env
 .cursor/
+.agent/
+.gemini/
 
 # ignore shapefiles .shp .gpkg
 *.shp
@@ -23,6 +25,8 @@ __pycache__/
 *.hdr
 *.stx
 *.tfw
+*.pdf
+
 
 *.html
 
@@ -43,6 +47,9 @@ Plots\fig13_GIF_ASR.py
 
 # ignore png files
 *.png
+
+#ignore development tries
+Model_physical/dev/
 
 
 

@@ -2,6 +2,7 @@ import ee
 import geopandas as gpd
 import matplotlib.pyplot as plt
 from unidecode import unidecode
+import pygadm
 # pandas is implicitly used by geopandas and for DataFrame creation if needed client-side
 # os module is removed as progressive local saving is removed
 from datetime import datetime # Retained for potential use, though dates are mainly strings now
@@ -129,6 +130,82 @@ def get_glad_image_for_year(year):
              for quad in quadrants]
     return ee.ImageCollection(images).mosaic()
 
+def get_boundary_gdf(country_name: str, admin_level: int, gpkg_path: str = None, tolerance: float = 0.01):
+    """
+    Retrieves and simplifies administrative boundaries for a country.
+    First tries local gpkg_path, then falls back to pygadm.
+    
+    Args:
+        country_name (str): Name of the country.
+        admin_level (int): Admin level (0, 1, or 2).
+        gpkg_path (str, optional): Path to local shapefile/geopackage.
+        tolerance (float): Simplification tolerance.
+        
+    Returns:
+        gpd.GeoDataFrame or None: The processed GeoDataFrame.
+    """
+    gdf = gpd.GeoDataFrame()
+    
+    # 1. Try local file if it exists
+    if gpkg_path and os.path.exists(gpkg_path):
+        print(f"Checking local shapefile: {gpkg_path}")
+        try:
+            full_gdf = gpd.read_file(gpkg_path)
+            # Standardize search column (some files use NAME_0, others ADMIN0)
+            search_col = 'ADMIN0' if 'ADMIN0' in full_gdf.columns else 'NAME_0'
+            if search_col in full_gdf.columns:
+                gdf = full_gdf[full_gdf[search_col] == country_name].copy()
+            else:
+                print(f"Column '{search_col}' not found in {gpkg_path}. Available: {full_gdf.columns.tolist()}")
+        except Exception as e:
+            print(f"Error reading local file: {e}")
+
+    # 2. Fallback to pygadm if not found locally
+    if gdf.empty:
+        print(f"Country '{country_name}' not found locally. Fetching via pygadm (level {admin_level})...")
+        try:
+            # pygadm.Items returns a GeoDataFrame for the specified country and level
+            gdf = pygadm.Items(name=country_name, content_level=admin_level)
+            
+            # Standardize columns to match the pipeline's expected format (ADMIN0, FNID, etc.)
+            rename_map = {
+                'NAME_0': 'ADMIN0',
+                'NAME_1': 'ADMIN1',
+                'NAME_2': 'ADMIN2',
+                f'GID_{admin_level}': 'FNID'
+            }
+            # Ensure columns exist before renaming
+            actual_rename = {k: v for k, v in rename_map.items() if k in gdf.columns}
+            gdf.rename(columns=actual_rename, inplace=True)
+            
+            # Ensure ADMINX columns exist for lower levels if not present
+            for i in range(3):
+                col = f'ADMIN{i}'
+                if col not in gdf.columns:
+                    gdf[col] = None
+                    
+            print(f"Successfully fetched {len(gdf)} regions via pygadm.")
+        except Exception as e:
+            print(f"Failed to fetch via pygadm: {e}")
+            return None
+
+    if gdf.empty:
+        print(f"Could not find boundaries for '{country_name}'.")
+        return None
+
+    # 3. Simplify geometry
+    # Simplification is crucial for GEE performance and avoiding vertex limit errors
+    print(f"Simplifying geometries with tolerance={tolerance}...")
+    gdf['geometry'] = gdf['geometry'].simplify(tolerance=tolerance, preserve_topology=True)
+    
+    # Set CRS to WGS84 if not set
+    if gdf.crs is None:
+        gdf.set_crs("EPSG:4326", inplace=True)
+    elif gdf.crs != "EPSG:4326":
+        gdf = gdf.to_crs("EPSG:4326")
+        
+    return gdf
+
 def extractFPAR(country_name: str, start_date_str: str, end_date_str: str, 
               gpkg_path: str, output_filename_prefix: str, admin_level: int = 2):
     """
@@ -157,32 +234,27 @@ def extractFPAR(country_name: str, start_date_str: str, end_date_str: str,
 
     # 1. Load and filter administrative boundaries
     try:
-        print(f"Loading administrative boundaries from: {gpkg_path}")
-        world_boundaries = gpd.read_file(gpkg_path)
-        country_boundaries_gdf = world_boundaries[world_boundaries['ADMIN0'] == country_name]
-        if country_boundaries_gdf.empty:
-            print(f"No data found for country: {country_name} in column 'ADMIN0'. Available (sample): {world_boundaries['ADMIN0'].unique()[:10]}")
+        # get_boundary_gdf handles both local/pygadm loading and geometry simplification
+        country_boundaries_gdf = get_boundary_gdf(country_name, admin_level, gpkg_path)
+        
+        if country_boundaries_gdf is None or country_boundaries_gdf.empty:
+            print(f"Failed to obtain boundaries for {country_name}.")
             return None
         
         if admin_level == 0:
             # For admin level 0, create a single country boundary by dissolving all geometries
-            # PERFORMANCE NOTE: This dissolves all admin 2 boundaries into one complex geometry.
-            # The geometry is simplified both client-side and server-side to improve performance.
             print(f"Creating country-level boundary for {country_name}.")
             
-            # Dissolve all geometries into a single country boundary and simplify for performance
             # Use unary_union with buffer for cleaner geometry without internal artifacts
             from shapely.ops import unary_union
             dissolved_geom = unary_union(country_boundaries_gdf.geometry).buffer(0)
             
-            # Simplify the geometry to reduce complexity and improve Earth Engine performance
-            # Use a tolerance that maintains the general shape but reduces vertex count
+            # Final simplification for the dissolved geometry
+            # Note: get_boundary_gdf already simplified individual parts, 
+            # but dissolving often creates complex results that need another pass.
             simplified_geom = dissolved_geom.simplify(tolerance=0.01, preserve_topology=True)
             
-            print(f"Original dissolved geometry vertices: {len(dissolved_geom.exterior.coords) if hasattr(dissolved_geom, 'exterior') else 'N/A'}")
-            print(f"Simplified geometry vertices: {len(simplified_geom.exterior.coords) if hasattr(simplified_geom, 'exterior') else 'N/A'}")
-            
-            # Create a visualization of the simplified geometry
+            # Create a visualization of the simplified geometry if needed
             # plot_simplified_geometry(simplified_geom, country_name)
             
             # Create a single feature for the entire country
@@ -193,7 +265,6 @@ def extractFPAR(country_name: str, start_date_str: str, end_date_str: str,
                                        {'ADMIN_NAME': country_name, 'PCODE': f'{country_name}_COUNTRY'})
             
             # Further simplify the geometry in Earth Engine for optimal performance
-            # This reduces the geometry complexity on the server side
             simplified_feature = country_feature.simplify(maxError=1000)  # 1000m tolerance
             country_admin_fc = ee.FeatureCollection([simplified_feature])
             
@@ -203,19 +274,19 @@ def extractFPAR(country_name: str, start_date_str: str, end_date_str: str,
             # For admin level 1 or 2, use existing logic
             admin_column = f'ADMIN{admin_level}'
             if admin_column not in country_boundaries_gdf.columns:
-                print(f"Column {admin_column} not found in the GeoPackage. Available columns: {country_boundaries_gdf.columns.tolist()}")
+                print(f"Column {admin_column} not found in the GeoDataFrame. Available: {country_boundaries_gdf.columns.tolist()}")
                 return None
                 
             print(f"Found {len(country_boundaries_gdf)} Admin {admin_level} regions for {country_name}.")
             
-            # Convert selected geometries to an ee.FeatureCollection
+            # Convert geometries to an ee.FeatureCollection
             features = []
             for index, row in country_boundaries_gdf.iterrows():
                 shapely_geom = row['geometry']
                 geojson_geom = gpd.GeoSeries([shapely_geom]).__geo_interface__['features'][0]['geometry']
                 # Create ee.Feature with geometry and properties
                 feature = ee.Feature(ee.Geometry(geojson_geom, opt_evenOdd=True), 
-                                   {'ADMIN_NAME': row[admin_column], 'PCODE': row['FNID']})
+                                   {'ADMIN_NAME': row[admin_column], 'PCODE': row.get('FNID', f"{country_name}_{index}")})
                 features.append(feature)
             country_admin_fc = ee.FeatureCollection(features)
         
@@ -224,7 +295,9 @@ def extractFPAR(country_name: str, start_date_str: str, end_date_str: str,
             return None
 
     except Exception as e:
-        print(f"Error loading or processing administrative boundaries: {e}")
+        print(f"Error processing administrative boundaries: {e}")
+        import traceback
+        traceback.print_exc()
         return None
 
     # 2. Define Image Collections
@@ -357,21 +430,19 @@ if __name__ == "__main__":
         print("Earth Engine failed to initialize. Exiting test run.")
     else:
         # Test parameters
-        test_country = "Sierra Leone"
+        test_country = "Argentina" # Test with Italy to verify pygadm fallback
         test_start_date = "2000-01-01" 
         test_end_date = "2025-12-31"
-        # shapefile_path = 'Training\HarvestStatsAfrica\data\hvstat_africa_boundary_v1.0.gpkg'
-        # Using the same path as in NDVI.py, though the csv extension looks odd for a shapefile path argument.
-        # Assuming the user knows their environment setup.
         shapefile_path = 'GADM/gadm41_AFR_shp/gadm41_AFR_final.shp'
         output_prefix = f"FPAR_timeseries_GLAD"
-        admin_level = 2  # Test with Admin 0 to see geometry comparison plot
+        admin_level = 2  
+        tolerance = 0.01
 
         print(f"--- Starting FPAR extraction with GLAD cropland mask ---" )
         print(f"Country: {test_country}, Period: {test_start_date} to {test_end_date}, Admin Level: {admin_level}")
         
         export_task = extractFPAR(test_country, test_start_date, test_end_date, 
-                              shapefile_path, output_prefix, admin_level)
+                               shapefile_path, output_prefix, admin_level)
         
         if export_task:
             print(f"Test run initiated export task. Task ID: {export_task.id}")
